@@ -649,7 +649,8 @@ def test_gateway_ui_preserves_aorus_layout_and_ranked_retrieval_contract() -> No
     assert "<span>Context chunks</span>" in html
     assert "<h2>Retrieved</h2>" in html
     assert 'placeholder="Ask a question..."' in html
-    assert "Access checked live by Novo" in html
+    assert "Access checked live by Novo" not in html
+    assert 'id="accessSource"' not in html
     assert "Back to Novo" in html
     assert "Ask your Novo notebooks" not in html
     assert 'style="' not in html
@@ -660,6 +661,9 @@ def test_gateway_ui_preserves_aorus_layout_and_ranked_retrieval_contract() -> No
 
     assert 'addMessage("assistant", "thinking...")' in javascript
     assert 'addMessage("assistant", "Start a model before asking.")' in javascript
+    assert "el.userName.textContent = label;" in javascript
+    assert "user?.role" not in javascript
+    assert "accessSource" not in javascript
     assert "retrieval_top_k: state.retrievalTopK" in javascript
     assert "usedInContext" in javascript
     assert "source-ranked-only" in javascript

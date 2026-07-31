@@ -29,7 +29,7 @@ const MODEL_MAY_BE_RUNNING = new Set(["ready", "running", "starting", "draining"
 
 const el = Object.fromEntries([
   "corpus", "indexPanel", "indexBtn", "maxSources", "maxSourcesValue", "model", "runtime",
-  "modelSpecs", "clearBtn", "userName", "accessSource", "novoLink", "computeBanner",
+  "modelSpecs", "clearBtn", "userName", "novoLink", "computeBanner",
   "computeDetail", "retryButton", "activeCorpus", "activeModel", "messages", "askForm",
   "question", "askBtn", "contextMeter", "sources",
 ].map((id) => [id, document.getElementById(id)]));
@@ -184,8 +184,7 @@ function render() {
 function renderIdentity() {
   const user = state.context?.user;
   const label = user?.displayName || [user?.firstName, user?.lastName].filter(Boolean).join(" ") || user?.email || "";
-  el.userName.textContent = label ? `${label} · ${String(user?.role || "member")}` : "";
-  el.accessSource.textContent = "Access checked live by Novo";
+  el.userName.textContent = label;
   el.novoLink.href = state.context?.novoHomePath || "#";
 }
 
