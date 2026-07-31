@@ -671,6 +671,11 @@ def test_gateway_ui_preserves_aorus_layout_and_ranked_retrieval_contract() -> No
     assert "timings?.num_ctx" in javascript
     assert 'class="meter" role="progressbar"' in javascript
     assert 'querySelector(".meter > div").style.width' in javascript
+    assert 'specRow("status", statusText)' in javascript
+    assert '`${needsRebuild} of ${rows.length} need rebuild`' in javascript
+    assert 'aggregate ? "latest rebuild" : "last rebuilt"' in javascript
+    assert '"partially ready"' not in javascript
+    assert '"live Novo"' not in javascript
     assert '["total VRAM", totalVramGb != null && Number.isFinite(Number(totalVramGb))' in javascript
     assert 'style="' not in javascript
 

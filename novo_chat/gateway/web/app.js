@@ -252,18 +252,23 @@ function renderIndexPanel() {
   const activated = rows.map((row) => row.activatedAt).filter(Boolean).sort();
   const knownChunks = rows.filter((row) => Number.isFinite(Number(row.chunkCount)));
   const chunkCount = knownChunks.reduce((total, row) => total + Number(row.chunkCount), 0);
-  const readyText = state.indexStatus
-    ? state.indexStatus.exactReady
-      ? (activated.length ? formatBuiltAt(activated[activated.length - 1]) : "ready")
-      : rows.some((row) => row.exactReady) ? "partially ready" : "not built"
-    : "checking...";
-  const sourceUpdated = corpus.updated_at ? formatBuiltAt(corpus.updated_at) : "live Novo";
+  const readyCount = rows.filter((row) => row.exactReady).length;
+  const needsRebuild = rows.length - readyCount;
+  const aggregate = corpus.corpus_key === "novo:all";
   const rebuildingSelected = state.rebuildingIndex && state.rebuildingCorpus === state.corpus;
+  const statusText = rebuildingSelected
+    ? "Rebuilding"
+    : !state.indexStatus
+      ? "Checking"
+      : state.indexStatus.exactReady
+        ? "Ready"
+        : aggregate ? `${needsRebuild} of ${rows.length} need rebuild` : "Needs rebuild";
   el.indexPanel.innerHTML = `
     <div class="specs-title">Index</div>
     <div class="specs-rows">
-      ${specRow("last rebuilt", readyText)}
-      ${specRow("Novo updated", sourceUpdated)}
+      ${specRow("status", statusText)}
+      ${activated.length ? specRow(aggregate ? "latest rebuild" : "last rebuilt", formatBuiltAt(activated[activated.length - 1])) : ""}
+      ${corpus.updated_at ? specRow("Novo updated", formatBuiltAt(corpus.updated_at)) : ""}
       ${specRow("chunks", knownChunks.length ? formatInt(chunkCount) : "-")}
     </div>
     ${rebuildingSelected ? renderProgress("Rebuilding index", state.indexProgress) : ""}

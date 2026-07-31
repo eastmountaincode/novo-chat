@@ -43,6 +43,7 @@ class FixtureNovo:
                         "name": "Protein Engineering",
                         "accessRole": "owner",
                         "contentRevision": "sha256:" + "a" * 64,
+                        "updatedAt": "2026-07-31T20:00:00Z",
                         "pageCount": 42,
                         "attachmentCount": 7,
                         "textChars": 18240,
@@ -52,6 +53,7 @@ class FixtureNovo:
                         "name": "Cell Assays",
                         "accessRole": "viewer",
                         "contentRevision": "sha256:" + "b" * 64,
+                        "updatedAt": "2026-07-31T19:30:00Z",
                         "pageCount": 18,
                         "attachmentCount": 2,
                         "textChars": 7310,
@@ -76,7 +78,14 @@ class FixtureWorker:
 
     async def index_status(self, *, request_id, actor_user_id, scope):
         del request_id, actor_user_id
-        return {"indexes": [{**entry, "exactReady": True} for entry in scope]}
+        rows = []
+        for entry in scope:
+            exact_ready = entry["notebookId"] == "notebook-alpha"
+            row = {**entry, "exactReady": exact_ready}
+            if exact_ready:
+                row.update({"activatedAt": "2026-07-31T20:15:00Z", "chunkCount": 92})
+            rows.append(row)
+        return {"indexes": rows}
 
     async def submit(self, *, operation, request_id, idempotency_key, actor_user_id, scope, payload):
         del request_id, idempotency_key, actor_user_id
