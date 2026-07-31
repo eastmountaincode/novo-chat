@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 PROTOCOL_VERSION = "1"
 DEFAULT_AUDIENCE = "novo-chat-worker"
 DEFAULT_MAX_CLOCK_SKEW_SECONDS = 60
+MAX_CITATION_EXCERPT_CHARS = 16_000
 
 HEADER_PROTOCOL = "X-Novo-Chat-Protocol"
 HEADER_AUDIENCE = "X-Novo-Chat-Audience"
@@ -296,6 +297,7 @@ class QueryRequest(JobRequest):
     model: str = Field(min_length=1, max_length=192)
     strategy: QueryStrategy = QueryStrategy.HYBRID
     max_sources: int = Field(default=16, ge=1, le=100)
+    retrieval_top_k: int = Field(default=16, ge=1, le=32)
 
     @field_validator("model")
     @classmethod
@@ -329,6 +331,8 @@ class IndexStatusItem(ProtocolModel):
     content_revision: str
     index_schema_version: str
     exact_ready: bool
+    activated_at: str | None = Field(default=None, max_length=64)
+    chunk_count: int | None = Field(default=None, ge=0)
 
 
 class IndexStatusResponse(ProtocolModel):
@@ -346,6 +350,35 @@ class HealthResponse(ProtocolModel):
     index_service_healthy: bool
 
 
+class ModelDisplayDetails(ProtocolModel):
+    """Optional, display-only metadata for one approved generation model."""
+
+    model_size: str | None = Field(default=None, min_length=1, max_length=128, strict=True)
+    max_tokens: int = Field(ge=1, le=8192, strict=True)
+    max_model_len: int | None = Field(default=None, ge=1, le=2_000_000, strict=True)
+    thinking: str | None = Field(default=None, min_length=1, max_length=128, strict=True)
+    total_vram_gb: float | None = Field(
+        default=None,
+        gt=0,
+        le=10_000,
+        allow_inf_nan=False,
+    )
+
+    @field_validator("model_size", "thinking")
+    @classmethod
+    def validate_display_text(cls, value: str | None) -> str | None:
+        if value is not None and any(ord(character) < 32 or ord(character) == 127 for character in value):
+            raise ValueError("model display text must be a single printable line")
+        return value
+
+    @field_validator("total_vram_gb", mode="before")
+    @classmethod
+    def validate_total_vram_type(cls, value: Any) -> Any:
+        if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))):
+            raise ValueError("totalVramGb must be a JSON number")
+        return value
+
+
 class CapabilitiesResponse(ProtocolModel):
     protocol_version: str = PROTOCOL_VERSION
     request_id: str
@@ -354,6 +387,16 @@ class CapabilitiesResponse(ProtocolModel):
     index_schema_versions: tuple[str, ...]
     max_scope_entries: int
     max_ingest_pages_per_batch: int
+    model_details: dict[str, ModelDisplayDetails] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_model_details(self) -> "CapabilitiesResponse":
+        approved = set(self.approved_models)
+        for model_id in self.model_details:
+            _validate_safe_token(model_id, "modelDetails key")
+            if model_id not in approved:
+                raise ValueError("modelDetails contains a model that is not approved")
+        return self
 
 
 class ModelStatusItem(ProtocolModel):
@@ -371,9 +414,15 @@ class Citation(ProtocolModel):
     notebook_id: str
     page_id: str
     source_url: str
-    title: str = ""
-    excerpt: str = ""
-    score: float | None = None
+    title: str = Field(default="", max_length=4096)
+    excerpt: str = Field(default="", max_length=MAX_CITATION_EXCERPT_CHARS)
+    score: float | None = Field(default=None, allow_inf_nan=False)
+    source_idx: int | None = Field(default=None, ge=1, le=32)
+    file: str | None = Field(default=None, min_length=1, max_length=1024)
+    chunk_idx: int | None = Field(default=None, ge=0)
+    bm25: float | None = Field(default=None, allow_inf_nan=False)
+    dense: float | None = Field(default=None, allow_inf_nan=False)
+    used_in_context: bool | None = None
 
     @field_validator("source_url")
     @classmethod
@@ -903,6 +952,8 @@ __all__ = [
     "JobStatusResponse",
     "JobSubmissionResponse",
     "JobView",
+    "MAX_CITATION_EXCERPT_CHARS",
+    "ModelDisplayDetails",
     "ModelJobRequest",
     "ModelJobResult",
     "ModelRuntimeState",

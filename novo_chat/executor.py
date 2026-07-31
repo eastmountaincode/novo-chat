@@ -257,7 +257,8 @@ class WorkerExecutor:
             retrieval_question=str(operation.payload.get("retrievalQuestion") or operation.payload["question"]),
             model=model,
             strategy=strategy,
-            max_sources=int(operation.payload.get("maxSources") or 16),
+            max_sources=int(operation.payload.get("maxSources", 16)),
+            retrieval_top_k=int(operation.payload.get("retrievalTopK", 16)),
         )
         return result.model_dump(mode="json", by_alias=True)
 

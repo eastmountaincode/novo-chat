@@ -6,17 +6,32 @@ const state = {
   csrfToken: "",
   corpora: [],
   corpus: "",
+  indexStatus: null,
+  indexStatusGeneration: 0,
   models: [],
   model: "",
   modelStatus: {},
+  modelDetails: {},
   busy: false,
+  rebuildingIndex: false,
+  rebuildingCorpus: "",
+  indexProgress: null,
+  runtimeAction: null,
+  runtimeModel: "",
+  runtimeProgress: null,
+  maxSources: 16,
+  maxSourcesMax: 16,
+  retrievalTopK: 16,
   questionHistory: [],
 };
 
+const MODEL_MAY_BE_RUNNING = new Set(["ready", "running", "starting", "draining", "failed"]);
+
 const el = Object.fromEntries([
-  "corpus", "indexStatus", "indexButton", "maxSources", "maxSourcesValue", "model", "modelStatus",
-  "startModel", "stopModel", "clearButton", "userName", "novoLink", "computeBanner", "computeDetail",
-  "retryButton", "activeCorpus", "activeModel", "messages", "askForm", "question", "askButton", "sources",
+  "corpus", "indexPanel", "indexBtn", "maxSources", "maxSourcesValue", "model", "runtime",
+  "modelSpecs", "clearBtn", "userName", "accessSource", "novoLink", "computeBanner",
+  "computeDetail", "retryButton", "activeCorpus", "activeModel", "messages", "askForm",
+  "question", "askBtn", "contextMeter", "sources",
 ].map((id) => [id, document.getElementById(id)]));
 
 function apiPath(segment) {
@@ -25,35 +40,117 @@ function apiPath(segment) {
 }
 
 async function initialize() {
+  renderStaticControls();
   bindEvents();
   await refreshContext();
+  window.setInterval(() => void refreshWorker(), 15000);
+}
+
+function renderStaticControls() {
+  el.clearBtn.innerHTML = `${trashIcon()}<span>Clear conversation</span>`;
+  el.askBtn.innerHTML = sendIcon();
 }
 
 function bindEvents() {
-  el.corpus.addEventListener("change", () => { state.corpus = el.corpus.value; render(); });
+  el.corpus.addEventListener("change", () => {
+    state.corpus = el.corpus.value;
+    state.indexStatus = null;
+    state.indexStatusGeneration += 1;
+    clearConversation();
+    render();
+    void refreshIndexStatus();
+  });
   el.model.addEventListener("change", () => { state.model = el.model.value; render(); });
-  el.maxSources.addEventListener("input", () => { el.maxSourcesValue.value = el.maxSources.value; });
-  el.retryButton.addEventListener("click", refreshContext);
-  el.clearButton.addEventListener("click", clearConversation);
-  el.indexButton.addEventListener("click", () => submitAndWait({ operation: "index_rebuild", corpus: state.corpus, force: true }, "index"));
-  el.startModel.addEventListener("click", () => submitAndWait({ operation: "model_start", model: state.model }, "model"));
-  el.stopModel.addEventListener("click", () => submitAndWait({ operation: "model_stop", model: state.model }, "model"));
+  el.maxSources.addEventListener("input", () => {
+    state.maxSources = clampNumber(Number(el.maxSources.value), 1, state.maxSourcesMax);
+    renderContextControl();
+  });
+  el.retryButton.addEventListener("click", () => void refreshContext());
+  el.clearBtn.addEventListener("click", clearConversation);
+  el.indexBtn.addEventListener("click", () => void rebuildIndex());
   el.askForm.addEventListener("submit", (event) => { event.preventDefault(); void ask(); });
+  el.question.addEventListener("input", () => setBusy(state.busy));
+  el.question.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      void ask();
+    }
+  });
 }
 
 async function refreshContext() {
   try {
+    const previousCorpus = state.corpus;
     const data = await getJson("api/context");
     state.context = data;
     state.csrfToken = data.csrfToken || "";
-    state.corpora = data.corpora || [];
+    state.corpora = sortCorpora(data.corpora || []);
     state.corpus = state.corpora.some((item) => item.corpus_key === state.corpus)
       ? state.corpus
       : state.corpora[0]?.corpus_key || "";
+    if (
+      data.worker?.available !== true
+      || state.corpus !== previousCorpus
+      || state.indexStatus?.corpus !== state.corpus
+    ) {
+      state.indexStatus = null;
+      state.indexStatusGeneration += 1;
+    }
     applyWorkerDetails(data.worker || {});
     render();
+    if (data.worker?.available === true) await refreshIndexStatus();
   } catch (error) {
     addMessage("assistant", `Unable to load Novo Chat: ${error.message}`, true);
+  }
+}
+
+async function refreshWorker() {
+  try {
+    const wasAvailable = state.context?.worker?.available === true;
+    const worker = await getJson("api/worker");
+    if (!state.context) return;
+    state.context.worker = worker;
+    applyWorkerDetails(worker);
+    if (worker.available !== true) {
+      state.indexStatus = null;
+      state.indexStatusGeneration += 1;
+    }
+    const shouldRefreshIndex = worker.available === true && (
+      !wasAvailable || !state.indexStatus || state.indexStatus.corpus !== state.corpus
+    );
+    render();
+    if (shouldRefreshIndex) await refreshIndexStatus();
+  } catch (_error) {
+    if (!state.context) return;
+    state.context.worker = {
+      available: false,
+      detail: "The compute service may be offline or reconnecting. Novo is still available.",
+    };
+    state.indexStatus = null;
+    state.indexStatusGeneration += 1;
+    render();
+  }
+}
+
+async function refreshIndexStatus() {
+  const corpus = state.corpus;
+  const generation = ++state.indexStatusGeneration;
+  if (!corpus || state.context?.worker?.available !== true) {
+    state.indexStatus = null;
+    renderIndexPanel();
+    return;
+  }
+  try {
+    const status = await getJson(`api/index-status?corpus=${encodeURIComponent(corpus)}`);
+    if (state.corpus === corpus && state.indexStatusGeneration === generation) {
+      state.indexStatus = status;
+      renderIndexPanel();
+    }
+  } catch (_error) {
+    if (state.corpus === corpus && state.indexStatusGeneration === generation) {
+      state.indexStatus = null;
+      renderIndexPanel();
+    }
   }
 }
 
@@ -62,28 +159,33 @@ function applyWorkerDetails(worker) {
   const modelRows = capabilities.models || worker.models || [];
   state.models = modelRows.map((item) => typeof item === "string" ? item : item.id || item.model).filter(Boolean);
   state.modelStatus = worker.modelStatus || capabilities.modelStatus || {};
-  state.model = state.models.includes(state.model) ? state.model : state.models[0] || "";
+  state.modelDetails = capabilities.modelDetails || capabilities.model_details || {};
+  const healthy = state.models.find((model) => modelIsReady(state.modelStatus[model]));
+  state.model = state.models.includes(state.model) ? state.model : healthy || state.models[0] || "";
 }
 
 function render() {
   renderIdentity();
   renderCorpora();
   renderModels();
+  renderIndexPanel();
+  renderContextControl();
+  renderRuntime();
+  renderModelSpecs();
   const worker = state.context?.worker || {};
   el.computeBanner.hidden = worker.available === true;
   el.computeDetail.textContent = worker.detail || "The compute service may be offline or reconnecting. Novo is still available.";
   const corpus = state.corpora.find((item) => item.corpus_key === state.corpus);
-  el.activeCorpus.textContent = corpus?.name || "No notebook selected";
-  el.activeModel.textContent = state.model || "No model selected";
-  el.indexStatus.textContent = corpus?.content_revision
-    ? `Live Novo revision ${corpus.content_revision}`
-    : "Index freshness is checked when a job starts.";
+  el.activeCorpus.textContent = corpus?.name || state.corpus || "-";
+  el.activeModel.textContent = state.model || "-";
   setBusy(state.busy);
 }
 
 function renderIdentity() {
   const user = state.context?.user;
-  el.userName.textContent = user?.displayName || [user?.firstName, user?.lastName].filter(Boolean).join(" ") || user?.email || "";
+  const label = user?.displayName || [user?.firstName, user?.lastName].filter(Boolean).join(" ") || user?.email || "";
+  el.userName.textContent = label ? `${label} · ${String(user?.role || "member")}` : "";
+  el.accessSource.textContent = "Access checked live by Novo";
   el.novoLink.href = state.context?.novoHomePath || "#";
 }
 
@@ -97,54 +199,203 @@ function renderCorpora() {
   el.corpus.value = state.corpus;
 }
 
+function sortCorpora(corpora) {
+  const all = corpora.filter((corpus) => corpus.corpus_key === "novo:all");
+  const notebooks = corpora
+    .filter((corpus) => corpus.corpus_key !== "novo:all")
+    .sort((a, b) => String(a.name || a.corpus_key).localeCompare(
+      String(b.name || b.corpus_key), undefined, { numeric: true, sensitivity: "base" },
+    ));
+  return [...all, ...notebooks];
+}
+
 function renderModels() {
   el.model.replaceChildren(...state.models.map((model) => {
     const option = document.createElement("option");
     option.value = model;
-    option.textContent = model;
+    option.textContent = `${model} (${modelOptionState(state.modelStatus[model])})`;
     return option;
   }));
   el.model.value = state.model;
+}
+
+function modelState(status) {
+  return String(status?.state || (status?.healthy === true ? "ready" : "unknown")).toLowerCase();
+}
+
+function modelIsReady(status) {
+  return ["ready", "running"].includes(modelState(status));
+}
+
+function modelMayBeRunning(status) {
+  return MODEL_MAY_BE_RUNNING.has(modelState(status));
+}
+
+function modelOptionState(status) {
+  const current = modelState(status);
+  if (["ready", "running"].includes(current)) return "running";
+  if (["starting", "draining", "stopping", "failed", "unavailable"].includes(current)) return current;
+  return "stopped";
+}
+
+function selectedCorpus() {
+  return state.corpora.find((corpus) => corpus.corpus_key === state.corpus);
+}
+
+function renderIndexPanel() {
+  const corpus = selectedCorpus();
+  if (!corpus) {
+    el.indexPanel.innerHTML = "";
+    el.indexBtn.classList.add("hidden-ui");
+    return;
+  }
+  const rows = state.indexStatus?.indexes || [];
+  const activated = rows.map((row) => row.activatedAt).filter(Boolean).sort();
+  const knownChunks = rows.filter((row) => Number.isFinite(Number(row.chunkCount)));
+  const chunkCount = knownChunks.reduce((total, row) => total + Number(row.chunkCount), 0);
+  const readyText = state.indexStatus
+    ? state.indexStatus.exactReady
+      ? (activated.length ? formatBuiltAt(activated[activated.length - 1]) : "ready")
+      : rows.some((row) => row.exactReady) ? "partially ready" : "not built"
+    : "checking...";
+  const sourceUpdated = corpus.updated_at ? formatBuiltAt(corpus.updated_at) : "live Novo";
+  const rebuildingSelected = state.rebuildingIndex && state.rebuildingCorpus === state.corpus;
+  el.indexPanel.innerHTML = `
+    <div class="specs-title">Index</div>
+    <div class="specs-rows">
+      ${specRow("last rebuilt", readyText)}
+      ${specRow("Novo updated", sourceUpdated)}
+      ${specRow("chunks", knownChunks.length ? formatInt(chunkCount) : "-")}
+    </div>
+    ${rebuildingSelected ? renderProgress("Rebuilding index", state.indexProgress) : ""}
+  `;
+  el.indexBtn.classList.remove("hidden-ui");
+  el.indexBtn.innerHTML = `${refreshIcon()}<span>${rebuildingSelected ? "Rebuilding..." : "Rebuild index"}</span>`;
+}
+
+function renderContextControl() {
+  const max = Math.max(1, Number(state.maxSourcesMax || 16));
+  state.maxSources = clampNumber(state.maxSources, 1, max);
+  el.maxSources.min = "1";
+  el.maxSources.max = String(max);
+  el.maxSources.value = String(state.maxSources);
+  el.maxSourcesValue.textContent = String(state.maxSources);
+}
+
+function renderRuntime() {
   const status = state.modelStatus[state.model];
-  const modelState = String(status?.state || "").toLowerCase();
+  const current = modelState(status);
   const labels = {
-    ready: "Model running",
-    running: "Model running",
-    starting: "Model starting",
-    draining: "Model draining",
-    stopping: "Model stopping",
-    stopped: "Model stopped",
+    ready: "Running",
+    running: "Running",
+    starting: "Starting...",
+    draining: "Draining...",
+    stopping: "Stopping...",
+    stopped: "Stopped",
     failed: "Model failed",
     unavailable: "Model unavailable",
+    unknown: "Checking runtime status...",
   };
-  el.modelStatus.textContent = !state.model
-    ? "No approved models reported"
-    : labels[modelState] || (status?.healthy === true ? "Model running" : "Model state unknown");
+  const computeAvailable = state.context?.worker?.available === true;
+  const controlsLocked = state.busy || !computeAvailable || state.runtimeAction !== null;
+  const canStart = Boolean(state.model) && !controlsLocked && current !== "stopping" && !modelMayBeRunning(status);
+  const canStop = Boolean(state.model) && !controlsLocked && current !== "stopping" && modelMayBeRunning(status);
+  const visibleRuntimeAction = state.runtimeModel === state.model ? state.runtimeAction : null;
+  el.runtime.innerHTML = `
+    <div class="runtime-status">${escapeHtml(state.model ? labels[current] || "Checking runtime status..." : "No approved models reported")}</div>
+    <div class="runtime-actions">
+      <button id="startModelBtn" type="button" ${canStart ? "" : "disabled"}>
+        ${playIcon()}<span>${visibleRuntimeAction === "start" ? "Starting..." : "Start"}</span>
+      </button>
+      <button id="stopModelBtn" type="button" ${canStop ? "" : "disabled"}>
+        ${squareIcon()}<span>${visibleRuntimeAction === "stop" ? "Stopping..." : "Stop"}</span>
+      </button>
+    </div>
+    ${visibleRuntimeAction ? renderProgress(visibleRuntimeAction === "start" ? "Starting model" : "Stopping model", state.runtimeProgress) : ""}
+  `;
+  document.getElementById("startModelBtn")?.addEventListener("click", () => void controlRuntime("start"));
+  document.getElementById("stopModelBtn")?.addEventListener("click", () => void controlRuntime("stop"));
+}
+
+function renderModelSpecs() {
+  const spec = state.modelDetails[state.model];
+  if (!spec) {
+    el.modelSpecs.innerHTML = "";
+    return;
+  }
+  const maxTokens = spec.maxTokens ?? spec.max_tokens;
+  const maxModelLen = spec.maxModelLen ?? spec.max_model_len;
+  const totalVramGb = spec.totalVramGb ?? spec.total_vram_gb;
+  const rows = [
+    ["model size", spec.modelSize || spec.model_size],
+    ["total VRAM", totalVramGb != null && Number.isFinite(Number(totalVramGb))
+      ? `${Number(totalVramGb).toLocaleString(undefined, { maximumFractionDigits: 2 })} GB`
+      : null],
+    ["max output", maxTokens != null ? `${formatInt(maxTokens)} tokens` : null],
+    ["context", maxModelLen != null ? `${formatInt(maxModelLen)} tokens` : null],
+    ["thinking", spec.thinking],
+  ].filter((row) => row[1] !== null && row[1] !== undefined && row[1] !== "");
+  el.modelSpecs.innerHTML = rows.length
+    ? `<div class="specs-title">Model specs</div><div class="specs-rows">${rows.map(([label, value]) => specRow(label, value)).join("")}</div>`
+    : "";
+}
+
+function specRow(label, value) {
+  return `<div class="spec-row"><span>${escapeHtml(label)}</span><span class="mono">${escapeHtml(value)}</span></div>`;
+}
+
+function renderProgress(label, progress) {
+  const percent = progressPercent(progress);
+  return `
+    <div class="progress-block">
+      <div class="progress-line"><span>${escapeHtml(progress?.message || label)}</span><span class="mono">${percent.toFixed(0)}%</span></div>
+      <progress class="progress-native" max="100" value="${percent.toFixed(0)}">${percent.toFixed(0)}%</progress>
+    </div>
+  `;
+}
+
+function progressPercent(progress) {
+  const raw = progress?.percent ?? progress ?? 0;
+  const numeric = Number(raw);
+  if (!Number.isFinite(numeric)) return 0;
+  return Math.max(0, Math.min(100, numeric >= 0 && numeric <= 1 ? numeric * 100 : numeric));
 }
 
 async function ask() {
   const question = el.question.value.trim();
-  if (!question || state.busy) return;
+  if (!question || !state.corpus || state.busy) return;
+  if (!modelIsReady(state.modelStatus[state.model])) {
+    addMessage("assistant", "Start a model before asking.");
+    return;
+  }
   addMessage("user", question);
   el.question.value = "";
-  const pending = addMessage("assistant", "Checking notebook indexes and preparing compute…");
+  const pending = addMessage("assistant", "thinking...");
+  const selection = { corpus: state.corpus, model: state.model };
   const payload = {
     operation: "ask",
-    corpus: state.corpus,
+    corpus: selection.corpus,
     question,
     retrieval_question: [...state.questionHistory.slice(-2), question].join("\n\n"),
-    model: state.model,
+    model: selection.model,
     strategy: "hybrid",
-    max_sources: Number(el.maxSources.value),
+    max_sources: state.maxSources,
+    retrieval_top_k: state.retrievalTopK,
   };
   try {
     const result = await submitAndWait(payload, "ask", pending);
-    state.questionHistory.push(question);
-    state.questionHistory = state.questionHistory.slice(-3);
+    if (!selectionMatches(selection)) {
+      replaceMessage(pending, "The corpus or model changed while this job was running. Its result was not displayed.", true);
+      return;
+    }
+    rememberQuestion(question);
     replaceMessage(pending, result.answer || "The worker returned no answer.");
     renderSources(result.hits || result.sources || result.citations || []);
+    renderContextMeter(result);
   } catch (error) {
-    replaceMessage(pending, `Compute error: ${error.message}`, true);
+    if (selectionMatches(selection)) replaceMessage(pending, `Error: ${error.message}`, true);
+  } finally {
+    await refreshIndexStatus();
   }
 }
 
@@ -153,11 +404,19 @@ async function submitAndWait(payload, kind, messageNode = null) {
     throw new Error("Compute is unavailable.");
   }
   state.busy = true;
-  render();
-  let progressNode = messageNode;
-  if (!progressNode && kind !== "ask") {
-    progressNode = addMessage("assistant", kind === "index" ? "Preparing notebook data…" : "Submitting model job…");
+  const targetCorpus = String(payload.corpus || "");
+  const targetModel = String(payload.model || "");
+  if (kind === "index") {
+    state.rebuildingIndex = true;
+    state.rebuildingCorpus = targetCorpus;
+    state.indexProgress = { percent: 0, message: "Rebuilding index" };
   }
+  if (kind === "model") {
+    state.runtimeAction = payload.operation === "model_start" ? "start" : "stop";
+    state.runtimeModel = targetModel;
+    state.runtimeProgress = { percent: 0, message: state.runtimeAction === "start" ? "Starting model" : "Stopping model" };
+  }
+  render();
   try {
     const submission = await postJson("api/jobs", payload);
     const jobId = submission.jobId || submission.job?.jobId;
@@ -165,8 +424,19 @@ async function submitAndWait(payload, kind, messageNode = null) {
     while (true) {
       const status = await getJson(`api/jobs/${encodeURIComponent(jobId)}`);
       const stateName = String(status.state || status.job?.state || "").toLowerCase();
-      const progress = status.progress || status.job?.progress;
-      if (progressNode) replaceMessage(progressNode, jobProgressText(kind, stateName, progress));
+      const progress = status.progress ?? status.job?.progress ?? 0;
+      if (kind === "index") {
+        state.indexProgress = { percent: progress, message: "Rebuilding index" };
+        if (state.corpus === targetCorpus) renderIndexPanel();
+      } else if (kind === "model") {
+        state.runtimeProgress = {
+          percent: progress,
+          message: state.runtimeAction === "start" ? "Starting model" : "Stopping model",
+        };
+        if (state.model === targetModel) renderRuntime();
+      } else if (messageNode && stateName && stateName !== "queued") {
+        replaceMessage(messageNode, "thinking...");
+      }
       if (["completed", "succeeded", "success"].includes(stateName)) break;
       if (["failed", "cancelled", "canceled"].includes(stateName)) {
         const failure = status.error || status.job?.error;
@@ -176,44 +446,98 @@ async function submitAndWait(payload, kind, messageNode = null) {
       await delay(1000);
     }
     const result = await getJson(`api/jobs/${encodeURIComponent(jobId)}/result`);
-    if (kind === "index") replaceMessage(progressNode, "Index rebuild completed.");
-    if (kind === "model") {
-      replaceMessage(progressNode, "Model operation completed.");
-      await refreshContext();
-    }
+    if (kind === "model") await refreshWorker();
     return result.result || result;
   } finally {
     state.busy = false;
+    if (kind === "index") {
+      state.rebuildingIndex = false;
+      state.rebuildingCorpus = "";
+      state.indexProgress = null;
+    }
+    if (kind === "model") {
+      state.runtimeAction = null;
+      state.runtimeModel = "";
+      state.runtimeProgress = null;
+    }
     render();
   }
 }
 
-function jobProgressText(kind, stateName, progress) {
-  const label = kind === "index" ? "Index rebuild" : kind === "model" ? "Model operation" : "Answer";
-  const rawPercent = progress?.percent ?? progress;
-  const numericPercent = Number(rawPercent);
-  const percent = numericPercent >= 0 && numericPercent <= 1 ? numericPercent * 100 : numericPercent;
-  return `${label}: ${stateName || "queued"}${Number.isFinite(percent) ? ` (${percent.toFixed(0)}%)` : ""}`;
+async function rebuildIndex() {
+  if (!state.corpus || state.busy) return;
+  const corpus = state.corpus;
+  try {
+    await submitAndWait({ operation: "index_rebuild", corpus, force: true }, "index");
+    if (state.corpus === corpus) await refreshIndexStatus();
+  } catch (error) {
+    addMessage("assistant", `Index error: ${error.message}`, true);
+  }
+}
+
+async function controlRuntime(action) {
+  const model = state.model;
+  if (!model || state.busy || state.context?.worker?.available !== true) return;
+  try {
+    await submitAndWait({ operation: `model_${action}`, model }, "model");
+  } catch (error) {
+    addMessage("assistant", `Runtime error: ${error.message}`, true);
+  } finally {
+    await refreshWorker();
+  }
 }
 
 function renderSources(hits) {
   if (!hits.length) {
-    el.sources.innerHTML = '<p class="muted">No retrieval yet.</p>';
+    el.sources.innerHTML = '<div class="empty">No retrieval yet.</div>';
     return;
   }
   el.sources.innerHTML = hits.map((hit, index) => {
     const sourceHref = safeSourceHref(hit.sourceUrl || hit.source_url || hit.novoUrl || hit.novo_url);
+    const sourceIndex = Number(hit.sourceIdx || hit.source_idx || index + 1);
+    const notebookId = hit.notebookId || hit.notebook_id || "";
+    const notebook = state.corpora.find((item) => item.id === notebookId)?.name || hit.notebook || hit.notebookName || notebookId;
+    const used = hit.usedInContext ?? hit.used_in_context;
     return `
-      <details class="source" id="source-${Number(hit.source_idx || index + 1)}">
-        <summary><span class="citation">#${Number(hit.source_idx || index + 1)}</span><span>${escapeHtml(hit.title || hit.file || "Novo source")}</span></summary>
+      <details class="source ${used === false ? "source-ranked-only" : ""}" id="source-${sourceIndex}">
+        <summary>
+          <span class="mono">#${sourceIndex}</span>
+          <span class="mono">${Number(hit.score || 0).toFixed(3)}</span>
+          <code>${escapeHtml(hit.file || hit.title || "Novo source")}</code>
+        </summary>
         <div class="source-body">
-          <div class="source-meta">${escapeHtml(hit.notebook || hit.notebookName || "")}</div>
-          ${sourceHref ? `<p><a href="${escapeAttribute(sourceHref)}" target="_blank" rel="noreferrer">Open in Novo</a></p>` : ""}
-          <div>${escapeHtml(hit.text || hit.excerpt || "")}</div>
+          <div class="source-title">${escapeHtml(hit.title || "")}</div>
+          <div class="source-meta">${escapeHtml(notebook)}</div>
+          <div class="mono source-meta">${escapeHtml(sourceMetrics(hit))}</div>
+          ${sourceHref ? `<div><a href="${escapeAttribute(sourceHref)}" target="_blank" rel="noreferrer">Open Novo page</a></div>` : ""}
+          <div class="source-text">${escapeHtml(hit.text || hit.excerpt || "")}</div>
         </div>
       </details>
     `;
   }).join("");
+}
+
+function sourceMetrics(hit) {
+  const parts = [];
+  const chunk = hit.chunkIdx ?? hit.chunk_idx;
+  if (chunk !== null && chunk !== undefined) parts.push(`chunk ${chunk}`);
+  if (hit.bm25 !== null && hit.bm25 !== undefined) parts.push(`bm25=${Number(hit.bm25).toFixed(2)}`);
+  if (hit.dense !== null && hit.dense !== undefined) parts.push(`dense=${Number(hit.dense).toFixed(3)}`);
+  return parts.join(" - ");
+}
+
+function renderContextMeter(result) {
+  const timings = result?.timings;
+  if (!timings?.prompt_eval_count || !timings?.num_ctx) {
+    el.contextMeter.innerHTML = "";
+    return;
+  }
+  const percent = Math.min(100, (Number(timings.prompt_eval_count) / Number(timings.num_ctx)) * 100);
+  el.contextMeter.innerHTML = `
+    <div class="meter-label"><span>Context</span><span>${percent.toFixed(0)}% full</span></div>
+    <progress class="context-progress" max="100" value="${percent.toFixed(0)}">${percent.toFixed(0)}%</progress>
+    <div class="mono meter-text">${formatInt(timings.prompt_eval_count)} / ${formatInt(timings.num_ctx)} tokens</div>
+  `;
 }
 
 function safeSourceHref(value) {
@@ -228,31 +552,42 @@ function safeSourceHref(value) {
 }
 
 function addMessage(role, content, isError = false) {
-  document.querySelector(".welcome")?.remove();
-  const node = document.createElement("article");
-  node.className = "message";
-  node.innerHTML = `<div class="message-role">${role}</div><div class="message-body${isError ? " error" : ""}">${renderText(content)}</div>`;
-  el.messages.appendChild(node);
+  const row = document.createElement("div");
+  row.className = "message";
+  row.innerHTML = `
+    <div class="role">${role === "user" ? "user" : "assistant"}</div>
+    <div class="message-body"><div class="markdown-body${isError ? " error" : ""}">${renderText(content)}</div></div>
+  `;
+  el.messages.appendChild(row);
   el.messages.scrollTop = el.messages.scrollHeight;
-  return node;
+  return row;
 }
 
 function replaceMessage(node, content, isError = false) {
-  const body = node?.querySelector(".message-body");
+  const body = node?.querySelector(".markdown-body");
   if (!body) return;
   body.classList.toggle("error", isError);
   body.innerHTML = renderText(content);
+  el.messages.scrollTop = el.messages.scrollHeight;
 }
 
 function clearConversation() {
   state.questionHistory = [];
-  el.messages.innerHTML = '<div class="welcome"><h2>Ask your Novo notebooks</h2><p>Answers are grounded in notebooks your current Novo account can read.</p></div>';
+  el.messages.innerHTML = "";
   renderSources([]);
+  renderContextMeter(null);
 }
 
 function setBusy(busy) {
   const computeAvailable = state.context?.worker?.available === true;
-  for (const button of [el.askButton, el.indexButton, el.startModel, el.stopModel]) button.disabled = busy || !computeAvailable;
+  const selectionLocked = busy;
+  el.corpus.disabled = selectionLocked || state.corpora.length === 0;
+  el.model.disabled = selectionLocked || state.models.length === 0;
+  el.maxSources.disabled = selectionLocked;
+  el.clearBtn.disabled = selectionLocked;
+  el.retryButton.disabled = selectionLocked;
+  el.askBtn.disabled = busy || !computeAvailable || !modelIsReady(state.modelStatus[state.model]) || !el.question.value.trim();
+  el.indexBtn.disabled = busy || !computeAvailable || !state.corpus;
   el.question.disabled = busy || !computeAvailable;
 }
 
@@ -284,20 +619,70 @@ async function decodeResponse(response) {
   }
   if (!response.ok) {
     const retryHint = data.error?.retryable ? " You can retry this operation." : "";
-    throw new Error(`${data.detail || data.message || text || `HTTP ${response.status}`}${retryHint}`);
+    const detail = typeof data.detail === "string"
+      ? data.detail
+      : typeof data.message === "string"
+        ? data.message
+        : text || `HTTP ${response.status}`;
+    throw new Error(`${detail}${retryHint}`);
   }
   return data;
 }
 
 function tryJson(text) { try { return JSON.parse(text); } catch { return { detail: text }; } }
 function delay(ms) { return new Promise((resolve) => window.setTimeout(resolve, ms)); }
+function rememberQuestion(question) {
+  state.questionHistory = [...state.questionHistory.filter((item) => item !== question), question].slice(-3);
+}
+function selectionMatches(selection) {
+  return state.corpus === selection.corpus && state.model === selection.model;
+}
 function renderText(value) {
-  return escapeHtml(value)
+  return normalizeCitationBrackets(escapeHtml(value))
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\[((?:\d+\s*,\s*)*\d+)\]/g, (_match, numbers) => numbers.split(",").map((n) => `<a href="#source-${n.trim()}">[${n.trim()}]</a>`).join(" "));
+    .replace(/\[((?:\d+\s*,\s*)*\d+)\]/g, (_match, numbers) => numbers.split(",").map((n) => `<a class="citation-link" href="#source-${n.trim()}">[${n.trim()}]</a>`).join(" "));
 }
-function escapeHtml(value) { return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+function normalizeCitationBrackets(value) {
+  return value
+    .replace(/[【\[](\d+)(?:†[^】\]]*)?[】\]]/g, "[$1]")
+    .replace(/[【\[]((?:\d+\s*,\s*)+\d+)[】\]]/g, "[$1]");
+}
+function formatInt(value) { return Number(value || 0).toLocaleString(); }
+function clampNumber(value, min, max) {
+  const numeric = Number.isFinite(value) ? value : min;
+  return Math.max(min, Math.min(max, Math.round(numeric)));
+}
+function formatBuiltAt(value) {
+  if (!value) return "not built";
+  const normalized = String(value).replace(/([+-]\d{2})(\d{2})$/, "$1:$2");
+  const date = new Date(normalized);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return new Intl.DateTimeFormat(undefined, {
+    year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+  }).format(date);
+}
+function escapeHtml(value) { return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;"); }
 function escapeAttribute(value) { return escapeHtml(value).replace(/'/g, "&#39;"); }
+
+function playIcon() {
+  return `<svg class="button-icon" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"></polygon></svg>`;
+}
+
+function squareIcon() {
+  return `<svg class="button-icon" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12"></rect></svg>`;
+}
+
+function trashIcon() {
+  return `<svg class="button-icon clear-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"></path><path d="M3 6h18"></path><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>`;
+}
+
+function sendIcon() {
+  return `<svg class="button-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z"></path><path d="m21.854 2.147-10.94 10.939"></path></svg>`;
+}
+
+function refreshIcon() {
+  return `<svg class="button-icon" xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15.4-6.4L21 8"></path><path d="M21 3v5h-5"></path><path d="M21 12a9 9 0 0 1-15.4 6.4L3 16"></path><path d="M3 21v-5h5"></path></svg>`;
+}
 
 void initialize();

@@ -9,8 +9,10 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
+import novo_chat.gateway.app as gateway_app_module
 from novo_chat.gateway.app import create_app
 from novo_chat.gateway.config import GatewaySettings
+from novo_chat.gateway.models import GatewayJobRequest
 from novo_chat.gateway.novo_client import NovoContext, NovoUnauthenticated
 from novo_chat.gateway.secrets import write_test_secret
 from novo_chat.gateway.worker_client import WorkerRejected, WorkerUnavailable
@@ -72,6 +74,9 @@ class MockWorkerClient:
         self.submissions: list[dict[str, Any]] = []
         self.jobs: dict[str, dict[str, Any]] = {}
         self.indexes_ready = True
+        self.index_status_rows: dict[str, dict[str, Any]] = {}
+        self.index_status_requests: list[dict[str, Any]] = []
+        self.on_index_status: Any | None = None
 
     async def health(self) -> dict[str, Any]:
         if not self.available:
@@ -85,9 +90,27 @@ class MockWorkerClient:
         return {"models": {"approved-model": {"state": "running", "healthy": True}}}
 
     async def index_status(self, *, request_id: str, actor_user_id: str, scope: list[dict[str, str]]) -> dict[str, Any]:
+        self.index_status_requests.append(
+            {"requestId": request_id, "actorUserId": actor_user_id, "scope": scope}
+        )
+        if self.on_index_status is not None:
+            self.on_index_status()
         return {
             "requestId": request_id,
-            "indexes": [{**row, "exactReady": self.indexes_ready} for row in scope],
+            "indexes": [
+                {
+                    **row,
+                    "exactReady": self.index_status_rows.get(row["notebookId"], {}).get(
+                        "exactReady", self.indexes_ready
+                    ),
+                    **{
+                        key: value
+                        for key, value in self.index_status_rows.get(row["notebookId"], {}).items()
+                        if key != "exactReady"
+                    },
+                }
+                for row in scope
+            ],
         }
 
     async def submit(self, **kwargs: Any) -> dict[str, Any]:
@@ -220,12 +243,127 @@ def test_configurable_base_path_serves_relative_ui_assets(gateway) -> None:
     response = client.get("/lab-chat/", headers=session_headers())
     assert response.status_code == 200
     assert 'content="/lab-chat"' in response.text
+    assert 'href="static/favicon.ico"' in response.text
+    assert 'href="static/favicon.png"' in response.text
     assert 'href="static/styles.css"' in response.text
     assert 'src="static/app.js"' in response.text
     assert 'href="/static' not in response.text
     assert 'src="/static' not in response.text
     assert client.get("/lab-chat/static/app.js").status_code == 200
     assert client.get("/lab-chat/static/index.html").status_code == 404
+
+
+def test_favicon_routes_are_explicit_and_base_relative(gateway, monkeypatch, tmp_path: Path) -> None:
+    client, _novo, _worker = gateway
+    asset_directory = tmp_path / "approved-assets"
+    asset_directory.mkdir()
+    (asset_directory / "favicon.ico").write_bytes(b"approved-ico")
+    (asset_directory / "favicon.png").write_bytes(b"approved-png")
+    monkeypatch.setattr(gateway_app_module, "WEB_DIR", asset_directory)
+
+    ico = client.get("/lab-chat/static/favicon.ico")
+    png = client.get("/lab-chat/static/favicon.png")
+
+    assert ico.status_code == 200
+    assert ico.headers["content-type"].startswith("image/x-icon")
+    assert ico.content == b"approved-ico"
+    assert png.status_code == 200
+    assert png.headers["content-type"].startswith("image/png")
+    assert png.content == b"approved-png"
+    assert client.get("/favicon.ico").status_code == 404
+    assert client.get("/lab-chat/favicon.ico").status_code == 404
+
+
+def test_index_status_requires_auth_and_never_calls_worker_for_an_inaccessible_corpus(gateway) -> None:
+    client, _novo, worker = gateway
+
+    unauthenticated = client.get("/lab-chat/api/index-status?corpus=novo:notebook-a")
+    inaccessible = client.get(
+        "/lab-chat/api/index-status?corpus=novo:notebook-other",
+        headers=session_headers(),
+    )
+
+    assert unauthenticated.status_code == 401
+    assert inaccessible.status_code == 404
+    assert inaccessible.json() == {"detail": "Corpus not found"}
+    assert worker.index_status_requests == []
+
+
+def test_index_status_returns_only_authorized_exact_scope_and_safe_metadata(gateway) -> None:
+    client, novo, worker = gateway
+    novo.contexts["alice-session"] = context_for("alice", ("notebook-b", "notebook-a"))
+    worker.index_status_rows = {
+        "notebook-a": {
+            "exactReady": True,
+            "activatedAt": "2026-07-31T20:00:00Z",
+            "chunkCount": 12,
+            "internalArtifactId": "must-not-leak",
+        },
+        "notebook-b": {"exactReady": False},
+    }
+
+    response = client.get(
+        "/lab-chat/api/index-status?corpus=novo:all",
+        headers=session_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "corpus": "novo:all",
+        "exactReady": False,
+        "indexes": [
+            {
+                "notebookId": "notebook-a",
+                "notebookName": "Notebook notebook-a",
+                "contentRevision": "sha256:notebook-a",
+                "exactReady": True,
+                "activatedAt": "2026-07-31T20:00:00Z",
+                "chunkCount": 12,
+            },
+            {
+                "notebookId": "notebook-b",
+                "notebookName": "Notebook notebook-b",
+                "contentRevision": "sha256:notebook-b",
+                "exactReady": False,
+            },
+        ],
+    }
+    assert worker.index_status_requests[0]["actorUserId"] == "alice"
+    assert [row["notebookId"] for row in worker.index_status_requests[0]["scope"]] == [
+        "notebook-a",
+        "notebook-b",
+    ]
+    assert "internalArtifactId" not in response.text
+
+    worker.index_status_requests.clear()
+    selected = client.get(
+        "/lab-chat/api/index-status?corpus=novo:notebook-b",
+        headers=session_headers(),
+    )
+    assert selected.status_code == 200
+    assert [row["notebookId"] for row in selected.json()["indexes"]] == ["notebook-b"]
+    assert [row["notebookId"] for row in worker.index_status_requests[0]["scope"]] == ["notebook-b"]
+
+
+def test_index_status_rechecks_live_revision_before_releasing_metadata(gateway) -> None:
+    client, novo, worker = gateway
+
+    def change_revision() -> None:
+        novo.contexts["alice-session"] = context_for(
+            "alice",
+            content_revisions={"notebook-a": "sha256:changed"},
+        )
+
+    worker.on_index_status = change_revision
+    response = client.get(
+        "/lab-chat/api/index-status?corpus=novo:notebook-a",
+        headers=session_headers(),
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": "Novo notebook content or access changed during the status check. Try again."
+    }
 
 
 def test_context_uses_live_novo_session_and_degrades_independently(gateway) -> None:
@@ -235,6 +373,8 @@ def test_context_uses_live_novo_session_and_degrades_independently(gateway) -> N
     payload = response.json()
     assert payload["user"]["id"] == "alice"
     assert [row["corpus_key"] for row in payload["corpora"]] == ["novo:all", "novo:notebook-a"]
+    assert payload["corpora"][0]["name"] == "All notebooks"
+    assert payload["corpora"][0]["updated_at"] == "2026-07-31T12:00:00Z"
     assert payload["worker"]["available"] is True
     assert novo.seen_sessions[-1] == "alice-session"
 
@@ -492,10 +632,78 @@ def test_public_job_poll_preserves_safe_structured_retryability(gateway) -> None
 
 def test_model_state_ui_distinguishes_transitions_and_failures() -> None:
     javascript = (Path(__file__).parents[1] / "novo_chat/gateway/web/app.js").read_text(encoding="utf-8")
-    assert 'starting: "Model starting"' in javascript
+    assert 'starting: "Starting..."' in javascript
+    assert 'draining: "Draining..."' in javascript
     assert 'failed: "Model failed"' in javascript
-    assert 'stopping: "Model stopping"' in javascript
+    assert 'stopping: "Stopping..."' in javascript
     assert 'unavailable: "Model unavailable"' in javascript
+
+
+def test_gateway_ui_preserves_aorus_layout_and_ranked_retrieval_contract() -> None:
+    web_directory = Path(__file__).parents[1] / "novo_chat/gateway/web"
+    html = (web_directory / "index.html").read_text(encoding="utf-8")
+    css = (web_directory / "styles.css").read_text(encoding="utf-8")
+    javascript = (web_directory / "app.js").read_text(encoding="utf-8")
+
+    assert "<span>Corpus</span>" in html
+    assert "<span>Context chunks</span>" in html
+    assert "<h2>Retrieved</h2>" in html
+    assert 'placeholder="Ask a question..."' in html
+    assert "Access checked live by Novo" in html
+    assert "Back to Novo" in html
+    assert "Ask your Novo notebooks" not in html
+    assert 'style="' not in html
+
+    assert "width: 288px" in css
+    assert "width: 384px" in css
+    assert "border-radius: 0" in css
+
+    assert 'addMessage("assistant", "thinking...")' in javascript
+    assert 'addMessage("assistant", "Start a model before asking.")' in javascript
+    assert "retrieval_top_k: state.retrievalTopK" in javascript
+    assert "usedInContext" in javascript
+    assert "source-ranked-only" in javascript
+    assert '["total VRAM", totalVramGb != null && Number.isFinite(Number(totalVramGb))' in javascript
+    assert 'style="' not in javascript
+
+
+def test_gateway_ui_guards_jobs_recovery_and_responsive_sources() -> None:
+    web_directory = Path(__file__).parents[1] / "novo_chat/gateway/web"
+    css = (web_directory / "styles.css").read_text(encoding="utf-8")
+    javascript = (web_directory / "app.js").read_text(encoding="utf-8")
+
+    assert 'const MODEL_MAY_BE_RUNNING = new Set(["ready", "running", "starting", "draining", "failed"]);' in javascript
+    assert "const controlsLocked = state.busy || !computeAvailable || state.runtimeAction !== null;" in javascript
+    assert "if (shouldRefreshIndex) await refreshIndexStatus();" in javascript
+    assert "if (worker.available !== true) {" in javascript
+    assert "el.corpus.disabled = selectionLocked" in javascript
+    assert "el.model.disabled = selectionLocked" in javascript
+    assert "el.maxSources.disabled = selectionLocked" in javascript
+    assert "if (!selectionMatches(selection))" in javascript
+    assert "state.rebuildingCorpus === state.corpus" in javascript
+    assert "state.runtimeModel === state.model" in javascript
+
+    responsive = css[css.index("@media (max-width: 1080px)") :]
+    assert "display: none" not in responsive
+    assert "grid-template-rows: minmax(0, 3fr) minmax(220px, 2fr)" in responsive
+    assert "grid-row: 3" in responsive
+
+
+def test_gateway_accepts_legacy_max_sources_limit_but_bounds_retrieval_depth() -> None:
+    common = {
+        "operation": "ask",
+        "corpus": "novo:notebook-a",
+        "question": "What happened?",
+        "model": "approved-model",
+    }
+    accepted = GatewayJobRequest.model_validate({**common, "max_sources": 100, "retrieval_top_k": 32})
+    assert accepted.max_sources == 100
+    assert accepted.retrieval_top_k == 32
+
+    with pytest.raises(ValueError):
+        GatewayJobRequest.model_validate({**common, "max_sources": 101})
+    with pytest.raises(ValueError):
+        GatewayJobRequest.model_validate({**common, "retrieval_top_k": 33})
 
 
 def test_job_ownership_is_not_disclosed_to_another_user(gateway) -> None:

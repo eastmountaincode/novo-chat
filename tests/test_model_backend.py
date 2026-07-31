@@ -163,6 +163,59 @@ def test_configuration_accepts_explicit_ipv4_ipv6_and_localhost_loopback() -> No
     assert parsed.models["model:a"].base_url == "http://localhost:8000"
 
 
+def test_model_display_metadata_is_optional_typed_and_exported() -> None:
+    legacy_backend = HttpModelBackend(ModelBackendDocument.model_validate(valid_config()))
+    legacy_details = legacy_backend.model_details["model:a"]
+    assert legacy_details.model_dump(mode="json", by_alias=True, exclude_none=True) == {
+        "maxTokens": 512,
+    }
+
+    document = valid_config()
+    document["models"]["model:a"].update(
+        {
+            "modelSize": " 122B ",
+            "maxModelLen": 262_144,
+            "thinking": "enabled",
+            "totalVramGb": 192,
+        }
+    )
+    backend = HttpModelBackend(ModelBackendDocument.model_validate(document))
+
+    assert backend.model_details["model:a"].model_dump(mode="json", by_alias=True) == {
+        "modelSize": "122B",
+        "maxTokens": 512,
+        "maxModelLen": 262_144,
+        "thinking": "enabled",
+        "totalVramGb": 192.0,
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("modelSize", "   "),
+        ("modelSize", "122B\nunsafe"),
+        ("modelSize", 122),
+        ("maxModelLen", 0),
+        ("maxModelLen", True),
+        ("maxModelLen", "262144"),
+        ("thinking", ""),
+        ("thinking", "enabled\tunsafe"),
+        ("totalVramGb", 0),
+        ("totalVramGb", True),
+        ("totalVramGb", "192"),
+        ("totalVramGb", float("nan")),
+        ("totalVramGb", float("inf")),
+    ],
+)
+def test_model_display_metadata_rejects_ambiguous_or_unsafe_values(field: str, value: Any) -> None:
+    document = valid_config()
+    document["models"]["model:a"][field] = value
+
+    with pytest.raises(ValidationError):
+        ModelBackendDocument.model_validate(document)
+
+
 def test_load_configuration_requires_an_absolute_valid_json_file(tmp_path: Path) -> None:
     relative = Path("model-backends.json")
     with pytest.raises(ValueError, match="must be absolute"):

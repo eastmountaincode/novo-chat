@@ -184,7 +184,11 @@ installed for as long as either environment controller is enabled.
    group/world-writable. Its embedding and generation origins must be literal
    compute-host loopback HTTP origins. The ordered model keys must exactly equal
    `NOVO_CHAT_APPROVED_MODELS` and the controller allowlist IDs. This document
-   contains endpoints and model names, not credentials.
+   contains endpoints and model names, not credentials. The `modelSize`,
+   `maxModelLen`, `thinking`, and `totalVramGb` members are optional,
+   display-only metadata for the browser. Their template defaults are `null`;
+   replace those values only with facts about the reviewed backend, or remove
+   the members when a value is unknown. They do not change model execution.
 3. Create `/var/lib/novo-chat-worker/staging` as `10001:10001` mode `0750`.
 4. Create `/etc/novo-chat/secrets/worker-staging` with the two matching protocol
    key files, owned `root:10001` mode `0440`.

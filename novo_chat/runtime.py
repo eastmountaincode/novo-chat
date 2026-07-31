@@ -455,6 +455,7 @@ def load_worker_runtime(
             response_key_id=response_key_id,
             response_secret=response_secret,
             approved_models=models,
+            model_details=model_backend.model_details,
             index_schema_versions=schemas,
             executor_poll_seconds=float(
                 _number(values, "NOVO_CHAT_EXECUTOR_POLL_SECONDS", default="0.5")

@@ -239,6 +239,92 @@ class WorkerExecutionTests(unittest.TestCase):
         self.assertEqual({row["notebookId"] for row in completed.result["citations"]}, {alpha.notebook_id})
         self.assertEqual({row["notebook_id"] for row in self.backend.last_hits}, {alpha.notebook_id})
 
+    def test_query_returns_ranked_hits_beyond_the_prompt_context(self):
+        scope = self.scope("notebook-ranked", "rev-ranked")
+        pages = tuple(
+            self.page(f"page-{index}", f"alpha result {index} " + (chr(96 + index) * 1_500))
+            for index in range(1, 5)
+        )
+        self.ingest_and_finalize(scope, pages, batch_size=4)
+        self.assertEqual(self.rebuild((scope,)).state, JobState.SUCCEEDED)
+
+        query = self.submit(
+            JobOperation.QUERY,
+            (scope,),
+            {
+                "question": "alpha?",
+                "retrievalQuestion": "alpha",
+                "model": "model:a",
+                "strategy": "hybrid",
+                "maxSources": 2,
+                "retrievalTopK": 4,
+            },
+        )
+        completed = self.execute(query)
+
+        self.assertEqual(completed.state, JobState.SUCCEEDED)
+        self.assertEqual(len(self.backend.last_hits), 2)
+        citations = completed.result["citations"]
+        self.assertEqual(len(citations), 4)
+        self.assertEqual([row["sourceIdx"] for row in citations], [1, 2, 3, 4])
+        self.assertEqual([row["usedInContext"] for row in citations], [True, True, False, False])
+        self.assertTrue(all(row["file"].endswith(".md") for row in citations))
+        self.assertTrue(all(row["chunkIdx"] == 0 for row in citations))
+        self.assertTrue(all(isinstance(row["score"], float) for row in citations))
+        self.assertTrue(all(isinstance(row["bm25"], float) for row in citations))
+        self.assertTrue(all(isinstance(row["dense"], float) for row in citations))
+        self.assertTrue(all(len(row["excerpt"]) > 1_000 for row in citations))
+
+    def test_query_accepts_legacy_max_sources_above_ranked_retrieval_limit(self):
+        scope = self.scope("notebook-legacy-depth", "rev-legacy-depth")
+        self.ingest_and_finalize(scope, (self.page("page-alpha", "alpha result"),))
+        self.assertEqual(self.rebuild((scope,)).state, JobState.SUCCEEDED)
+
+        query = self.submit(
+            JobOperation.QUERY,
+            (scope,),
+            {
+                "question": "alpha?",
+                "retrievalQuestion": "alpha",
+                "model": "model:a",
+                "strategy": "hybrid",
+                "maxSources": 100,
+                "retrievalTopK": 32,
+            },
+        )
+        completed = self.execute(query)
+
+        self.assertEqual(completed.state, JobState.SUCCEEDED)
+        self.assertEqual(len(self.backend.last_hits), 1)
+
+    def test_query_rejects_citation_to_ranked_hit_not_used_in_prompt(self):
+        scope = self.scope("notebook-ranked", "rev-ranked")
+        pages = tuple(
+            self.page(f"page-{index}", f"alpha result {index}")
+            for index in range(1, 5)
+        )
+        self.ingest_and_finalize(scope, pages, batch_size=4)
+        self.assertEqual(self.rebuild((scope,)).state, JobState.SUCCEEDED)
+        self.backend.answer_override = "This cites a ranked-only source [3]."
+
+        query = self.submit(
+            JobOperation.QUERY,
+            (scope,),
+            {
+                "question": "alpha?",
+                "retrievalQuestion": "alpha",
+                "model": "model:a",
+                "strategy": "hybrid",
+                "maxSources": 2,
+                "retrievalTopK": 4,
+            },
+        )
+        failed = self.execute(query)
+
+        self.assertEqual(len(self.backend.last_hits), 2)
+        self.assertEqual(failed.state, JobState.FAILED)
+        self.assertEqual(failed.error_code, "CITATION_VALIDATION_FAILED")
+
     def test_finalize_rejects_missing_extra_and_wrong_aggregate_checksum(self):
         scope = self.scope("notebook-a", "rev-a")
         page_a = self.page("page-a", "alpha")

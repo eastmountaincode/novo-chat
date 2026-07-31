@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator
 
-from fastapi import APIRouter, FastAPI, HTTPException, Request, status
+from fastapi import APIRouter, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import ValidationError
 from starlette.requests import ClientDisconnect
@@ -16,7 +16,15 @@ from starlette.requests import ClientDisconnect
 from novo_chat.protocol import validate_same_origin_path
 
 from .config import GatewaySettings
-from .models import GatewayJobRequest, GatewayOperation, JobAccepted, JobPublicStatus, WorkerAvailability
+from .models import (
+    GatewayIndexStatus,
+    GatewayIndexStatusItem,
+    GatewayJobRequest,
+    GatewayOperation,
+    JobAccepted,
+    JobPublicStatus,
+    WorkerAvailability,
+)
 from .novo_client import (
     NovoContext,
     NovoIntegrationClient,
@@ -250,6 +258,14 @@ def create_app(
     async def stylesheet() -> FileResponse:
         return FileResponse(WEB_DIR / "styles.css", media_type="text/css")
 
+    @chat.get("/static/favicon.ico", include_in_schema=False)
+    async def favicon_ico() -> FileResponse:
+        return FileResponse(WEB_DIR / "favicon.ico", media_type="image/x-icon")
+
+    @chat.get("/static/favicon.png", include_in_schema=False)
+    async def favicon_png() -> FileResponse:
+        return FileResponse(WEB_DIR / "favicon.png", media_type="image/png")
+
     @chat.get("/healthz")
     async def healthz() -> dict[str, Any]:
         db_ok = await job_store.healthy()
@@ -284,6 +300,52 @@ def create_app(
     async def worker_status(request: Request) -> WorkerAvailability:
         await session_and_context(request)
         return await worker_availability(worker_client)
+
+    @api.get(
+        "/index-status",
+        response_model=GatewayIndexStatus,
+        response_model_exclude_none=True,
+    )
+    async def index_status(
+        request: Request,
+        corpus: str = Query(
+            min_length=6,
+            max_length=197,
+            pattern=r"^novo:[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$",
+        ),
+    ) -> GatewayIndexStatus:
+        _session_value, context = await session_and_context(request)
+        submitted = GatewayJobRequest(operation=GatewayOperation.INDEX_REBUILD, corpus=corpus)
+        scope = resolve_scope(context, submitted, settings.index_schema_version)
+        worker_response = await worker_client.index_status(
+            request_id=str(uuid.uuid4()),
+            actor_user_id=context.user.id,
+            scope=scope,
+        )
+
+        # Re-resolve the live session after the worker response so a revision
+        # or grant change cannot release stale index metadata.
+        _session_value, refreshed_context = await session_and_context(request)
+        if refreshed_context.user.id != context.user.id:
+            raise NovoUnauthenticated
+        try:
+            refreshed_scope = resolve_scope(refreshed_context, submitted, settings.index_schema_version)
+        except HTTPException as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Novo notebook content or access changed during the status check. Try again.",
+            ) from exc
+        if refreshed_scope != scope:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Novo notebook content or access changed during the status check. Try again.",
+            )
+        return public_index_status(
+            corpus=corpus,
+            context=refreshed_context,
+            requested_scope=scope,
+            worker_response=worker_response,
+        )
 
     @api.post("/jobs", response_model=JobAccepted, status_code=status.HTTP_202_ACCEPTED)
     async def submit_job(request: Request) -> JobAccepted:
@@ -408,8 +470,12 @@ def public_corpora(context: NovoContext) -> list[dict[str, Any]]:
         {
             "id": "all",
             "corpus_key": "novo:all",
-            "name": "All my notebooks",
+            "name": "All notebooks",
             "content_revision": aggregate_revision(notebooks),
+            "updated_at": max(
+                (notebook.updated_at for notebook in notebooks if notebook.updated_at),
+                default=None,
+            ),
             "notebook_count": len(notebooks),
         }
     ]
@@ -420,6 +486,68 @@ def public_corpora(context: NovoContext) -> list[dict[str, Any]]:
 def aggregate_revision(notebooks: list[Any]) -> str:
     material = "\n".join(f"{row.id}:{row.content_revision}" for row in notebooks).encode("utf-8")
     return f"sha256:{hashlib.sha256(material).hexdigest()}"
+
+
+def public_index_status(
+    *,
+    corpus: str,
+    context: NovoContext,
+    requested_scope: list[dict[str, str]],
+    worker_response: dict[str, Any],
+) -> GatewayIndexStatus:
+    if not isinstance(worker_response, dict):
+        raise WorkerRejected("Worker returned an invalid index-status response")
+    rows = worker_response.get("indexes")
+    if not isinstance(rows, list) or len(rows) != len(requested_scope):
+        raise WorkerRejected("Worker returned an invalid index-status response")
+
+    requested_keys = {
+        (entry["notebookId"], entry["contentRevision"], entry["indexSchemaVersion"])
+        for entry in requested_scope
+    }
+    by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise WorkerRejected("Worker returned an invalid index-status response")
+        key = (
+            str(row.get("notebookId") or ""),
+            str(row.get("contentRevision") or ""),
+            str(row.get("indexSchemaVersion") or ""),
+        )
+        if key not in requested_keys or key in by_key or not isinstance(row.get("exactReady"), bool):
+            raise WorkerRejected("Worker returned an invalid index-status response")
+        activated_at = row.get("activatedAt")
+        if activated_at is not None and (not isinstance(activated_at, str) or len(activated_at) > 64):
+            raise WorkerRejected("Worker returned an invalid index-status response")
+        chunk_count = row.get("chunkCount")
+        if chunk_count is not None and (
+            not isinstance(chunk_count, int) or isinstance(chunk_count, bool) or chunk_count < 0
+        ):
+            raise WorkerRejected("Worker returned an invalid index-status response")
+        by_key[key] = row
+
+    names = {notebook.id: notebook.name for notebook in context.notebooks}
+    public_rows: list[GatewayIndexStatusItem] = []
+    for entry in requested_scope:
+        key = (entry["notebookId"], entry["contentRevision"], entry["indexSchemaVersion"])
+        row = by_key.get(key)
+        if row is None:
+            raise WorkerRejected("Worker returned an invalid index-status response")
+        public_rows.append(
+            GatewayIndexStatusItem(
+                notebookId=entry["notebookId"],
+                notebookName=names.get(entry["notebookId"], ""),
+                contentRevision=entry["contentRevision"],
+                exactReady=row["exactReady"],
+                activatedAt=row.get("activatedAt"),
+                chunkCount=row.get("chunkCount"),
+            )
+        )
+    return GatewayIndexStatus(
+        corpus=corpus,
+        exactReady=all(row.exactReady for row in public_rows),
+        indexes=public_rows,
+    )
 
 
 def notebook_ids(context: NovoContext) -> list[str]:

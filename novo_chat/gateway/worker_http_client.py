@@ -203,6 +203,7 @@ class WorkerHttpClient:
                     model=payload.get("model"),
                     strategy=strategy,
                     max_sources=payload.get("max_sources", 6),
+                    retrieval_top_k=payload.get("retrieval_top_k", 16),
                 )
                 route = "/query"
             elif operation == "index_rebuild":

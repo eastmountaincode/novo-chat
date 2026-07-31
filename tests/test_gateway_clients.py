@@ -11,6 +11,7 @@ from novo_chat.gateway.secrets import FileSecret, write_test_secret
 from novo_chat.gateway.worker_client import WorkerRejected
 from novo_chat.gateway.worker_http_client import WorkerHttpClient
 from novo_chat.protocol import (
+    CapabilitiesResponse,
     ErrorResponse,
     JobError,
     JobOperation,
@@ -150,6 +151,81 @@ def test_novo_client_surfaces_precondition_failure_as_revision_change(tmp_path: 
                 assert exc.notebook_id == "notebook-a"
             else:
                 raise AssertionError("expected a distinct revision-change signal")
+
+    asyncio.run(exercise())
+
+
+def test_worker_client_preserves_typed_model_details_from_signed_capabilities(
+    tmp_path: Path,
+) -> None:
+    request_secret_path = tmp_path / "gateway-key"
+    response_secret_path = tmp_path / "worker-key"
+    request_secret = "gateway-request-secret-01234567890123456789"
+    response_secret = "worker-response-secret-01234567890123456789"
+    write_test_secret(request_secret_path, request_secret)
+    write_test_secret(response_secret_path, response_secret)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        verified = verify_request(
+            headers=request.headers,
+            secrets_by_key_id={"gateway-key": request_secret},
+            expected_environment="staging",
+            method=request.method,
+            path=request.url.path,
+            body=request.content,
+        )
+        response_model = CapabilitiesResponse(
+            requestId=verified.request_id,
+            operations=(),
+            approvedModels=("model:a",),
+            indexSchemaVersions=("index-v1",),
+            maxScopeEntries=256,
+            maxIngestPagesPerBatch=250,
+            modelDetails={
+                "model:a": {
+                    "modelSize": "122B",
+                    "maxTokens": 2048,
+                    "maxModelLen": 262144,
+                    "thinking": "enabled",
+                    "totalVramGb": 192,
+                }
+            },
+        )
+        response_body = canonical_json(response_model)
+        return httpx.Response(
+            200,
+            headers=sign_response(
+                secret=response_secret,
+                key_id="worker-key",
+                environment="staging",
+                request_id=verified.request_id,
+                status_code=200,
+                body=response_body,
+            ),
+            content=response_body,
+        )
+
+    async def exercise() -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            client = WorkerHttpClient(
+                base_url="http://127.0.0.1:8196/internal/v1",
+                request_secret=FileSecret(request_secret_path, minimum_bytes=32),
+                response_secret=FileSecret(response_secret_path, minimum_bytes=32),
+                request_key_id="gateway-key",
+                response_key_id="worker-key",
+                environment="staging",
+                timeout_s=2,
+                client=http,
+            )
+            capabilities = await client.capabilities()
+            assert capabilities["models"] == ["model:a"]
+            assert capabilities["modelDetails"]["model:a"] == {
+                "modelSize": "122B",
+                "maxTokens": 2048,
+                "maxModelLen": 262144,
+                "thinking": "enabled",
+                "totalVramGb": 192.0,
+            }
 
     asyncio.run(exercise())
 

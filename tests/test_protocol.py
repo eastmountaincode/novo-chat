@@ -5,12 +5,16 @@ import unittest
 from pydantic import ValidationError
 
 from novo_chat.protocol import (
+    CapabilitiesResponse,
     Citation,
     InMemoryReplayGuard,
+    IndexStatusItem,
+    MAX_CITATION_EXCERPT_CHARS,
     ModelJobRequest,
     NotebookScope,
     PageDocument,
     ProtocolError,
+    QueryRequest,
     RebuildRequest,
     canonical_json,
     canonicalize_query,
@@ -153,6 +157,55 @@ class CanonicalProtocolTests(unittest.TestCase):
 
 
 class ProtocolModelTests(unittest.TestCase):
+    def test_capabilities_model_details_are_typed_additive_and_camel_cased(self):
+        common = {
+            "requestId": REQUEST_ID,
+            "operations": [],
+            "approvedModels": ["model:a"],
+            "indexSchemaVersions": ["v1"],
+            "maxScopeEntries": 256,
+            "maxIngestPagesPerBatch": 250,
+        }
+        legacy = CapabilitiesResponse.model_validate(common)
+        self.assertEqual(legacy.model_details, {})
+
+        current = CapabilitiesResponse.model_validate(
+            {
+                **common,
+                "modelDetails": {
+                    "model:a": {
+                        "modelSize": "122B",
+                        "maxTokens": 2048,
+                        "maxModelLen": 262_144,
+                        "thinking": "enabled",
+                        "totalVramGb": 192,
+                    }
+                },
+            }
+        )
+        self.assertEqual(
+            current.model_dump(mode="json", by_alias=True)["modelDetails"]["model:a"],
+            {
+                "modelSize": "122B",
+                "maxTokens": 2048,
+                "maxModelLen": 262_144,
+                "thinking": "enabled",
+                "totalVramGb": 192.0,
+            },
+        )
+
+        invalid_details = (
+            {"model:b": {"maxTokens": 2048}},
+            {"unsafe/model": {"maxTokens": 2048}},
+            {"model:a": {"maxTokens": "2048"}},
+            {"model:a": {"maxTokens": 2048, "maxModelLen": True}},
+            {"model:a": {"maxTokens": 2048, "totalVramGb": "192"}},
+            {"model:a": {"maxTokens": 2048, "command": "docker run"}},
+        )
+        for details in invalid_details:
+            with self.subTest(details=details), self.assertRaises(ValidationError):
+                CapabilitiesResponse.model_validate({**common, "modelDetails": details})
+
     def test_source_urls_are_same_origin_browser_paths(self):
         self.assertEqual(
             Citation(notebookId="n1", pageId="p1", sourceUrl="/?page=p1").source_url,
@@ -186,6 +239,81 @@ class ProtocolModelTests(unittest.TestCase):
                 "indexSchemaVersion": "index-v1",
             },
         )
+
+    def test_query_retrieval_depth_is_separate_bounded_and_camel_cased(self):
+        scope = {"notebookId": "n1", "contentRevision": "rev", "indexSchemaVersion": "v1"}
+        common = {
+            "requestId": REQUEST_ID,
+            "idempotencyKey": "idempotency-1",
+            "actorUserId": "user-1",
+            "scope": [scope],
+            "question": "What happened?",
+            "model": "model:a",
+        }
+        request = QueryRequest(**common, maxSources=100)
+        self.assertEqual(request.max_sources, 100)
+        self.assertEqual(request.retrieval_top_k, 16)
+        self.assertEqual(
+            request.model_dump(mode="json", by_alias=True)["retrievalTopK"],
+            16,
+        )
+        for field, value in (
+            ("maxSources", 0),
+            ("maxSources", 101),
+            ("retrievalTopK", 0),
+            ("retrievalTopK", 33),
+        ):
+            with self.subTest(field=field, value=value), self.assertRaises(ValidationError):
+                QueryRequest(**common, **{field: value})
+
+    def test_ranked_citation_fields_are_additive_bounded_and_camel_cased(self):
+        legacy = Citation(notebookId="n1", pageId="p1", sourceUrl="/?page=p1")
+        self.assertIsNone(legacy.source_idx)
+        citation = Citation(
+            sourceIdx=2,
+            file="p1.md",
+            notebookId="n1",
+            pageId="p1",
+            chunkIdx=3,
+            score=0.5,
+            bm25=1.25,
+            dense=0.75,
+            excerpt="full chunk",
+            sourceUrl="/?page=p1",
+            usedInContext=False,
+        )
+        payload = citation.model_dump(mode="json", by_alias=True)
+        self.assertEqual(payload["sourceIdx"], 2)
+        self.assertEqual(payload["chunkIdx"], 3)
+        self.assertFalse(payload["usedInContext"])
+        with self.assertRaises(ValidationError):
+            Citation(
+                notebookId="n1",
+                pageId="p1",
+                sourceUrl="/?page=p1",
+                excerpt="x" * (MAX_CITATION_EXCERPT_CHARS + 1),
+            )
+        for field in ("score", "bm25", "dense"):
+            with self.subTest(field=field), self.assertRaises(ValidationError):
+                Citation(
+                    notebookId="n1",
+                    pageId="p1",
+                    sourceUrl="/?page=p1",
+                    **{field: float("inf")},
+                )
+
+    def test_index_status_metadata_is_optional_and_uses_wire_aliases(self):
+        legacy = IndexStatusItem(
+            notebookId="n1",
+            contentRevision="rev",
+            indexSchemaVersion="v1",
+            exactReady=False,
+        )
+        self.assertIsNone(legacy.activated_at)
+        current = legacy.model_copy(update={"activated_at": "2026-07-31T12:00:00Z", "chunk_count": 42})
+        payload = current.model_dump(mode="json", by_alias=True)
+        self.assertEqual(payload["activatedAt"], "2026-07-31T12:00:00Z")
+        self.assertEqual(payload["chunkCount"], 42)
 
     def test_wildcards_duplicate_scope_and_model_scope_are_rejected(self):
         with self.assertRaises(ValidationError):

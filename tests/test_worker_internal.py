@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import tempfile
 import unittest
 from dataclasses import replace
@@ -13,6 +14,7 @@ from novo_chat.documents import FinalizedDocument
 from novo_chat.jobs import JobNotFound, JobStore
 from novo_chat.protocol import (
     JobOperation,
+    ModelDisplayDetails,
     NotebookScope,
     canonical_json,
     document_pages_checksum,
@@ -44,6 +46,15 @@ class WorkerInternalAPITests(unittest.TestCase):
             response_key_id="worker",
             response_secret=RESPONSE_SECRET,
             approved_models=("model:a",),
+            model_details={
+                "model:a": ModelDisplayDetails(
+                    modelSize="7B",
+                    maxTokens=2048,
+                    maxModelLen=32768,
+                    thinking="disabled",
+                    totalVramGb=24,
+                )
+            },
             index_schema_versions=("index-v1",),
         )
         self.app = create_worker_app(self.config, clock=lambda: NOW, auto_start_executor=False)
@@ -101,6 +112,71 @@ class WorkerInternalAPITests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["state"], "ready")
         self.assertEqual(response.json()["environment"], "staging")
+
+    def test_capabilities_publish_typed_model_display_metadata(self):
+        response, _, _ = self.signed_request("GET", "/internal/v1/capabilities")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["modelDetails"],
+            {
+                "model:a": {
+                    "modelSize": "7B",
+                    "maxTokens": 2048,
+                    "maxModelLen": 32768,
+                    "thinking": "disabled",
+                    "totalVramGb": 24.0,
+                }
+            },
+        )
+
+    def test_index_status_reports_metadata_only_for_a_validated_active_artifact(self):
+        scope = NotebookScope.model_validate(self.scope)
+        candidate = self.app.state.index_repository.build_candidate(
+            FinalizedDocument(
+                scope=scope,
+                document_checksum=document_pages_checksum([]),
+                pages=(),
+            ),
+            operation_id="op-status-metadata",
+        )
+        committed = self.app.state.index_repository.commit_candidate(candidate)
+        self.app.state.job_store.activate_index(
+            scope,
+            environment="staging",
+            artifact_id=committed.artifact_id,
+            now=NOW,
+        )
+
+        payload = {
+            "requestId": str(uuid4()),
+            "actorUserId": "user-a",
+            "scope": [self.scope],
+        }
+        ready, _, _ = self.signed_request("POST", "/internal/v1/indexes/status", payload)
+        self.assertEqual(ready.status_code, 200)
+        self.assertEqual(
+            ready.json()["indexes"][0],
+            {
+                **self.scope,
+                "exactReady": True,
+                "activatedAt": "2023-11-14T22:13:20Z",
+                "chunkCount": 0,
+            },
+        )
+
+        manifest_path = (
+            self.app.state.index_repository.artifact_root
+            / committed.artifact_id
+            / "manifest.json"
+        )
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["chunkCount"] = 1
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        payload["requestId"] = str(uuid4())
+        corrupt, _, _ = self.signed_request("POST", "/internal/v1/indexes/status", payload)
+        self.assertEqual(corrupt.status_code, 200)
+        self.assertEqual(corrupt.json()["indexes"][0], {**self.scope, "exactReady": False})
 
     def test_job_retention_configuration_is_positive_integer_seconds(self):
         self.assertEqual(self.config.job_retention_seconds, 7 * 24 * 60 * 60)

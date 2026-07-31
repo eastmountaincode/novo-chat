@@ -24,6 +24,7 @@ from .documents import FinalizedDocument
 from .jobs import ActiveIndex
 from .protocol import (
     Citation,
+    MAX_CITATION_EXCERPT_CHARS,
     NotebookScope,
     PageDocument,
     QueryJobResult,
@@ -77,6 +78,13 @@ class LoadedIndexArtifact:
     artifact_id: str
     chunks: tuple[dict[str, Any], ...]
     vectors: np.ndarray
+
+
+@dataclass(frozen=True)
+class IndexArtifactStatus:
+    exact_ready: bool
+    activated_at: str | None = None
+    chunk_count: int | None = None
 
 
 def _atomic_json(path: Path, value: Any) -> None:
@@ -262,13 +270,23 @@ class IndexRepository:
         )
 
     def artifact_ready(self, active: ActiveIndex | None) -> bool:
+        return self.artifact_status(active).exact_ready
+
+    def artifact_status(self, active: ActiveIndex | None) -> IndexArtifactStatus:
         if active is None:
-            return False
+            return IndexArtifactStatus(exact_ready=False)
         try:
-            self.load_active(active)
-            return True
+            artifact = self.load_active(active)
         except ComputeError:
-            return False
+            return IndexArtifactStatus(exact_ready=False)
+        activated_at = str(active.activated_at).strip()
+        if not activated_at or len(activated_at) > 64:
+            activated_at = None
+        return IndexArtifactStatus(
+            exact_ready=True,
+            activated_at=activated_at,
+            chunk_count=len(artifact.chunks),
+        )
 
     def prune(self, *, retained_artifact_ids: Sequence[str], modified_before: float) -> dict[str, int]:
         """Remove expired candidates and non-active immutable artifacts."""
@@ -366,7 +384,17 @@ class IndexRepository:
         model: str,
         strategy: QueryStrategy,
         max_sources: int,
+        retrieval_top_k: int = 16,
     ) -> QueryJobResult:
+        for label, value, upper_bound in (
+            ("maxSources", max_sources, 100),
+            ("retrievalTopK", retrieval_top_k, 32),
+        ):
+            if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= upper_bound:
+                raise ComputeError(
+                    "QUERY_OPTIONS_INVALID",
+                    f"{label} must be an integer between 1 and {upper_bound}.",
+                )
         allowed_notebooks = {artifact.scope.notebook_id for artifact in artifacts}
         chunks: list[dict[str, Any]] = []
         vector_sets: list[np.ndarray] = []
@@ -386,27 +414,34 @@ class IndexRepository:
             answer = self.backend.generate(question, (), model=model, max_sources=max_sources)
             return QueryJobResult(answer=self._validated_answer(str(answer), ()), model=model, citations=())
         vectors = np.vstack(vector_sets).astype(np.float32, copy=False)
-        hits = self._retrieve(
+        ranked_hits = self._retrieve(
             chunks,
             vectors,
             retrieval_question,
             strategy=strategy,
-            count=max_sources,
+            count=retrieval_top_k,
         )
+        prompt_hits = ranked_hits[:max_sources]
         answer = self._validated_answer(
-            str(self.backend.generate(question, hits, model=model, max_sources=max_sources)),
-            hits,
+            str(self.backend.generate(question, prompt_hits, model=model, max_sources=max_sources)),
+            prompt_hits,
         )
         citations = tuple(
             Citation(
+                source_idx=int(hit["source_idx"]),
+                file=str(hit.get("file") or ""),
                 notebook_id=str(hit["notebook_id"]),
                 page_id=str(hit["page_id"]),
+                chunk_idx=int(hit.get("chunk_idx") or 0),
+                score=float(hit["score"]),
+                bm25=float(hit["bm25"]),
+                dense=float(hit["dense"]),
+                excerpt=str(hit.get("text") or "")[:MAX_CITATION_EXCERPT_CHARS],
                 source_url=str(hit["source_url"]),
                 title=str(hit.get("title") or ""),
-                excerpt=str(hit.get("text") or "")[:1000],
-                score=float(hit["score"]),
+                used_in_context=position <= len(prompt_hits),
             )
-            for hit in hits
+            for position, hit in enumerate(ranked_hits, start=1)
         )
         return QueryJobResult(answer=str(answer), model=model, citations=citations)
 
@@ -486,6 +521,7 @@ class IndexRepository:
 __all__ = [
     "ComputeBackend",
     "ComputeError",
+    "IndexArtifactStatus",
     "IndexCandidate",
     "IndexRepository",
     "LoadedIndexArtifact",

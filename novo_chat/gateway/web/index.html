@@ -5,49 +5,47 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="novo-chat-base-path" content="__NOVO_CHAT_BASE_PATH__" />
     <title>novo chat</title>
+    <link rel="icon" href="static/favicon.ico" sizes="any" />
+    <link rel="icon" href="static/favicon.png" type="image/png" />
     <link rel="stylesheet" href="static/styles.css" />
   </head>
   <body>
-    <div class="app-shell">
+    <div class="app">
       <aside class="settings">
-        <header class="brand">
-          <span class="brand-mark" aria-hidden="true"></span>
+        <div class="topbar">
+          <img class="app-icon" src="static/favicon.png" alt="" aria-hidden="true" />
           <h1>novo chat</h1>
-        </header>
-
+        </div>
         <div class="settings-body">
           <label class="field">
-            <span>Notebook</span>
+            <span>Corpus</span>
             <select id="corpus"></select>
           </label>
 
-          <div id="indexStatus" class="panel"></div>
-          <button id="indexButton" type="button">Rebuild index</button>
+          <div id="indexPanel" class="index-panel"></div>
+          <button id="indexBtn" type="button" class="index-btn">Rebuild index</button>
 
-          <label class="field">
+          <label class="field context-field">
             <span>Context chunks</span>
             <div class="slider-row">
-              <input id="maxSources" type="range" min="1" max="16" value="6" />
-              <output id="maxSourcesValue">6</output>
+              <input id="maxSources" type="range" min="1" max="16" value="16" />
+              <output id="maxSourcesValue" class="mono slider-value">16</output>
             </div>
           </label>
 
           <label class="field">
             <span>Model</span>
             <select id="model"></select>
+            <div id="runtime" class="runtime"></div>
+            <div id="modelSpecs" class="specs"></div>
           </label>
-          <div id="modelStatus" class="panel"></div>
-          <div class="button-row">
-            <button id="startModel" type="button">Start</button>
-            <button id="stopModel" type="button">Stop</button>
-          </div>
 
-          <button id="clearButton" class="secondary" type="button">Clear conversation</button>
+          <button id="clearBtn" type="button" class="clear-btn">Clear conversation</button>
 
-          <div class="identity">
-            <strong id="userName"></strong>
-            <span>Access checked live by Novo</span>
-            <a id="novoLink" href="#">Back to Novo</a>
+          <div class="user-session">
+            <div id="userName" class="user-name"></div>
+            <div id="accessSource" class="snapshot-access">Access checked live by Novo</div>
+            <a id="novoLink" class="logout-btn novo-link" href="#">Back to Novo</a>
           </div>
         </div>
       </aside>
@@ -59,28 +57,28 @@
           <button id="retryButton" type="button">Retry</button>
         </div>
 
-        <div class="chat-heading">
-          <span id="activeCorpus">No notebook selected</span>
-          <span aria-hidden="true">/</span>
-          <span id="activeModel">No model selected</span>
+        <div class="chat-status">
+          <span id="activeCorpus" class="active-corpus">-</span>
+          <span class="slash">/</span>
+          <span id="activeModel" class="active-model">-</span>
         </div>
 
-        <section id="messages" class="messages" aria-live="polite">
-          <div class="welcome">
-            <h2>Ask your Novo notebooks</h2>
-            <p>Answers are grounded in notebooks your current Novo account can read.</p>
-          </div>
-        </section>
+        <section id="messages" class="messages" aria-live="polite"></section>
 
         <form id="askForm" class="composer">
-          <textarea id="question" rows="2" placeholder="Ask a question…" required></textarea>
-          <button id="askButton" type="submit">Send</button>
+          <textarea id="question" rows="1" placeholder="Ask a question..." required></textarea>
+          <button id="askBtn" type="submit" aria-label="Send">Send</button>
         </form>
       </main>
 
       <aside class="sources">
-        <header><h2>Retrieved sources</h2></header>
-        <div id="sources" class="source-list"><p class="muted">No retrieval yet.</p></div>
+        <div class="sources-header">
+          <h2>Retrieved</h2>
+          <div id="contextMeter" class="context-meter"></div>
+        </div>
+        <div id="sources" class="source-list">
+          <div class="empty">No retrieval yet.</div>
+        </div>
       </aside>
     </div>
     <script src="static/app.js"></script>

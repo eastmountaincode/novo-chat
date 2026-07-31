@@ -6,7 +6,7 @@ import re
 import threading
 import time
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -42,6 +42,7 @@ from .protocol import (
     JobStatusResponse,
     JobSubmissionResponse,
     JobView,
+    ModelDisplayDetails,
     ModelJobRequest,
     ModelRuntimeState,
     ModelStatusItem,
@@ -72,6 +73,7 @@ class WorkerConfig:
     response_secret: bytes | str
     audience: str = DEFAULT_AUDIENCE
     approved_models: tuple[str, ...] = ()
+    model_details: Mapping[str, ModelDisplayDetails] = field(default_factory=dict)
     index_schema_versions: tuple[str, ...] = ("novo-chat-index-v1",)
     max_clock_skew_seconds: int = 60
     max_request_bytes: int = 32 * 1024 * 1024
@@ -91,6 +93,21 @@ class WorkerConfig:
             raise ValueError("at least one request verification key is required")
         if len(set(self.approved_models)) != len(self.approved_models):
             raise ValueError("approved model IDs must be unique")
+        if not isinstance(self.model_details, Mapping):
+            raise ValueError("model details must be a mapping")
+        normalized_model_details: dict[str, ModelDisplayDetails] = {}
+        for model_id, details in self.model_details.items():
+            if model_id not in self.approved_models:
+                raise ValueError("model details must refer only to approved models")
+            try:
+                normalized_model_details[model_id] = (
+                    details
+                    if isinstance(details, ModelDisplayDetails)
+                    else ModelDisplayDetails.model_validate(details)
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"model details for {model_id!r} are invalid") from exc
+        object.__setattr__(self, "model_details", normalized_model_details)
         if not self.index_schema_versions or len(set(self.index_schema_versions)) != len(self.index_schema_versions):
             raise ValueError("index schema versions must be nonempty and unique")
         if self.max_clock_skew_seconds < 1:
@@ -555,6 +572,7 @@ def create_worker_app(
             request_id=request_id_from(request),
             operations=tuple(JobOperation),
             approved_models=config.approved_models,
+            model_details=dict(config.model_details),
             index_schema_versions=config.index_schema_versions,
             max_scope_entries=config.max_scope_entries,
             max_ingest_pages_per_batch=config.max_ingest_pages_per_batch,
@@ -565,8 +583,8 @@ def create_worker_app(
     def index_status(body: IndexStatusRequest, request: Request) -> dict[str, Any]:
         bind_request(request, body.request_id)
         validate_scope(body.scope)
-        ready_states = [
-            index_repository.artifact_ready(store.active_index(entry, environment=config.environment))
+        index_states = [
+            index_repository.artifact_status(store.active_index(entry, environment=config.environment))
             for entry in body.scope
         ]
         response_model = IndexStatusResponse(
@@ -576,9 +594,11 @@ def create_worker_app(
                     notebook_id=entry.notebook_id,
                     content_revision=entry.content_revision,
                     index_schema_version=entry.index_schema_version,
-                    exact_ready=ready,
+                    exact_ready=status.exact_ready,
+                    activated_at=status.activated_at,
+                    chunk_count=status.chunk_count,
                 )
-                for entry, ready in zip(body.scope, ready_states)
+                for entry, status in zip(body.scope, index_states)
             ),
         )
         return _response_payload(response_model)
@@ -652,6 +672,7 @@ def create_worker_app(
                 "model": body.model,
                 "strategy": body.strategy.value,
                 "maxSources": body.max_sources,
+                "retrievalTopK": body.retrieval_top_k,
             },
         )
         return _response_payload(response_model)

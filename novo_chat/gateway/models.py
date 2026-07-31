@@ -28,7 +28,8 @@ class GatewayJobRequest(BaseModel):
     retrieval_question: str | None = Field(default=None, max_length=30_000)
     model: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$")
     strategy: str = Field(default="hybrid", pattern=r"^(auto|hybrid|fts)$")
-    max_sources: int = Field(default=6, ge=1, le=32)
+    max_sources: int = Field(default=6, ge=1, le=100)
+    retrieval_top_k: int = Field(default=16, ge=1, le=32)
     force: bool = False
 
     @model_validator(mode="after")
@@ -49,6 +50,25 @@ class WorkerAvailability(BaseModel):
     detail: str = ""
     capabilities: dict[str, Any] = Field(default_factory=dict)
     modelStatus: dict[str, Any] = Field(default_factory=dict)
+
+
+class GatewayIndexStatusItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    notebookId: str = Field(min_length=1, max_length=192)
+    notebookName: str = Field(default="", max_length=4096)
+    contentRevision: str = Field(min_length=1, max_length=256)
+    exactReady: bool
+    activatedAt: str | None = Field(default=None, max_length=64)
+    chunkCount: int | None = Field(default=None, ge=0)
+
+
+class GatewayIndexStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    corpus: str = Field(min_length=1, max_length=197)
+    exactReady: bool
+    indexes: list[GatewayIndexStatusItem] = Field(min_length=1, max_length=256)
 
 
 class JobAccepted(BaseModel):

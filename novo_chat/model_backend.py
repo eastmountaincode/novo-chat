@@ -15,7 +15,7 @@ import requests
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .compute import ComputeError
-from .protocol import NotebookScope
+from .protocol import ModelDisplayDetails, NotebookScope
 from .rag_core import generation_messages
 
 
@@ -70,7 +70,34 @@ class EmbeddingBackendConfig(_StrictModel):
 class GenerationBackendConfig(_StrictModel):
     base_url: str = Field(alias="baseUrl")
     served_model: str = Field(alias="servedModel", min_length=1, max_length=256)
+    model_size: str | None = Field(
+        default=None,
+        alias="modelSize",
+        min_length=1,
+        max_length=128,
+        strict=True,
+    )
     max_tokens: int = Field(default=2048, alias="maxTokens", ge=1, le=8192)
+    max_model_len: int | None = Field(
+        default=None,
+        alias="maxModelLen",
+        ge=1,
+        le=2_000_000,
+        strict=True,
+    )
+    thinking: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        strict=True,
+    )
+    total_vram_gb: float | None = Field(
+        default=None,
+        alias="totalVramGb",
+        gt=0,
+        le=10_000,
+        allow_inf_nan=False,
+    )
     timeout_seconds: float = Field(default=840.0, alias="timeoutSeconds", ge=1, le=900)
     chat_template_kwargs: dict[str, Any] = Field(default_factory=dict, alias="chatTemplateKwargs")
 
@@ -78,6 +105,25 @@ class GenerationBackendConfig(_StrictModel):
     @classmethod
     def validate_base_url(cls, value: str) -> str:
         return _loopback_origin(value)
+
+    @field_validator("model_size", "thinking")
+    @classmethod
+    def validate_display_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized or any(
+            ord(character) < 32 or ord(character) == 127 for character in normalized
+        ):
+            raise ValueError("model display text must be a single printable line")
+        return normalized
+
+    @field_validator("total_vram_gb", mode="before")
+    @classmethod
+    def validate_total_vram_type(cls, value: Any) -> Any:
+        if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))):
+            raise ValueError("totalVramGb must be a JSON number")
+        return value
 
     @field_validator("chat_template_kwargs")
     @classmethod
@@ -126,6 +172,19 @@ class HttpModelBackend:
     @property
     def approved_models(self) -> tuple[str, ...]:
         return tuple(self.config.models)
+
+    @property
+    def model_details(self) -> dict[str, ModelDisplayDetails]:
+        return {
+            model_id: ModelDisplayDetails(
+                model_size=backend.model_size,
+                max_tokens=backend.max_tokens,
+                max_model_len=backend.max_model_len,
+                thinking=backend.thinking,
+                total_vram_gb=backend.total_vram_gb,
+            )
+            for model_id, backend in self.config.models.items()
+        }
 
     def embed_documents(self, texts: Sequence[str], *, scope: NotebookScope) -> np.ndarray:
         del scope

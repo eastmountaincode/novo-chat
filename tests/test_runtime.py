@@ -80,6 +80,11 @@ class RuntimeConfigurationTests(unittest.TestCase):
                         "qwen3.5:122b": {
                             "baseUrl": "http://127.0.0.1:8002",
                             "servedModel": "served-model",
+                            "modelSize": "122B",
+                            "maxTokens": 4096,
+                            "maxModelLen": 262144,
+                            "thinking": "enabled",
+                            "totalVramGb": 192,
                         }
                     },
                 }
@@ -192,6 +197,18 @@ class RuntimeConfigurationTests(unittest.TestCase):
             Path("/run/novo-chat/staging-modelctl.sock"),
         )
         self.assertEqual(runtime.model_backend.approved_models, ("qwen3.5:122b",))
+        self.assertEqual(
+            runtime.config.model_details["qwen3.5:122b"].model_dump(
+                mode="json", by_alias=True
+            ),
+            {
+                "modelSize": "122B",
+                "maxTokens": 4096,
+                "maxModelLen": 262144,
+                "thinking": "enabled",
+                "totalVramGb": 192.0,
+            },
+        )
         self.assertEqual(runtime.config.job_retention_seconds, 604800)
         self.assertEqual(runtime.config.orphan_grace_seconds, 3600)
         self.assertEqual(runtime.config.document_storage_quota_bytes, 50 * 1024**3)

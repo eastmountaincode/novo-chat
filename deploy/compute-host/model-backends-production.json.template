@@ -12,7 +12,11 @@
     "@PRODUCTION_APPROVED_MODEL@": {
       "baseUrl": "http://127.0.0.1:@PRODUCTION_GENERATION_PORT@",
       "servedModel": "@PRODUCTION_SERVED_MODEL@",
+      "modelSize": null,
       "maxTokens": 2048,
+      "maxModelLen": null,
+      "thinking": null,
+      "totalVramGb": null,
       "timeoutSeconds": 840,
       "chatTemplateKwargs": {}
     }
