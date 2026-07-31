@@ -669,6 +669,8 @@ def test_gateway_ui_preserves_aorus_layout_and_ranked_retrieval_contract() -> No
     assert "source-ranked-only" in javascript
     assert "timings?.prompt_eval_count" in javascript
     assert "timings?.num_ctx" in javascript
+    assert 'class="meter" role="progressbar"' in javascript
+    assert 'querySelector(".meter > div").style.width' in javascript
     assert '["total VRAM", totalVramGb != null && Number.isFinite(Number(totalVramGb))' in javascript
     assert 'style="' not in javascript
 
