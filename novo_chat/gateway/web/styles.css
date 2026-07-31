@@ -1,0 +1,77 @@
+:root {
+  color-scheme: light;
+  font-family: Helvetica, Arial, sans-serif;
+  color: #111;
+  background: #fff;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+button, select, textarea, input { font: inherit; }
+button, select, textarea { border: 1px solid #111; background: #fff; color: #111; }
+button { padding: 7px 11px; cursor: pointer; }
+button:hover:not(:disabled), button:focus-visible:not(:disabled) { background: #111; color: #fff; }
+button:disabled { cursor: not-allowed; opacity: .4; }
+select, textarea { width: 100%; padding: 7px 8px; }
+textarea { resize: vertical; line-height: 1.4; }
+a { color: #111; text-underline-offset: 2px; }
+
+.app-shell { display: grid; grid-template-columns: 288px minmax(360px, 1fr) 320px; height: 100vh; overflow: hidden; }
+.settings, .sources { display: flex; min-width: 0; flex-direction: column; }
+.settings { border-right: 1px solid #111; }
+.sources { border-left: 1px solid #111; }
+.brand, .sources header, .chat-heading { min-height: 49px; border-bottom: 1px solid #111; display: flex; align-items: center; }
+.brand { gap: 8px; padding: 0 16px; }
+.brand-mark { width: 20px; height: 20px; border: 1px solid #111; background: linear-gradient(135deg, #111 0 50%, #fff 50%); }
+.brand h1 { margin: 0; font-size: 16px; text-transform: lowercase; }
+.settings-body { flex: 1; overflow: auto; padding: 16px; }
+.field { display: block; margin-bottom: 16px; }
+.field > span, .panel-title { display: block; margin-bottom: 5px; color: #555; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+.slider-row { display: grid; grid-template-columns: 1fr 34px; gap: 8px; align-items: center; }
+.slider-row output { font-family: ui-monospace, monospace; text-align: right; font-size: 12px; }
+.panel { margin: 0 0 8px; border: 1px solid #111; padding: 8px; font-size: 12px; line-height: 1.45; }
+.panel:empty { display: none; }
+.button-row { display: flex; gap: 8px; margin: 8px 0 18px; }
+.secondary { margin-top: 8px; }
+.identity { margin-top: 24px; padding-top: 12px; border-top: 1px solid #111; display: grid; gap: 5px; font-size: 12px; }
+.identity span { color: #555; font-size: 11px; }
+
+.chat { display: flex; min-width: 0; flex-direction: column; }
+.chat-heading { gap: 12px; padding: 0 20px; font-size: 12px; }
+.chat-heading span:first-child { font-weight: 700; }
+.compute-banner { border-bottom: 1px solid #111; padding: 10px 16px; background: #fff5d6; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; font-size: 12px; }
+.compute-banner[hidden] { display: none; }
+.messages { flex: 1; overflow: auto; padding: 24px; }
+.welcome { max-width: 720px; margin: 8vh auto; text-align: center; }
+.welcome h2 { font-size: 20px; margin: 0 0 8px; }
+.welcome p, .muted { color: #555; }
+.message { display: grid; grid-template-columns: 72px 1fr; gap: 16px; max-width: 880px; margin: 0 auto 24px; font-size: 14px; line-height: 1.5; }
+.message-role { color: #555; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+.message-body { white-space: pre-wrap; overflow-wrap: anywhere; }
+.job-progress { margin-top: 8px; color: #555; font: 11px ui-monospace, monospace; }
+.composer { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 16px 20px; border-top: 1px solid #111; }
+.composer button { min-width: 72px; }
+
+.sources header { padding: 0 16px; }
+.sources h2 { margin: 0; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
+.source-list { flex: 1; overflow: auto; padding: 16px; }
+.source { border: 1px solid #111; margin-bottom: 10px; }
+.source summary { display: grid; grid-template-columns: auto 1fr; gap: 8px; padding: 8px; cursor: pointer; font-size: 11px; }
+.source-body { border-top: 1px solid #ddd; padding: 10px; font-size: 12px; line-height: 1.45; }
+.source-meta { color: #555; margin-bottom: 7px; }
+.citation { font-family: ui-monospace, monospace; }
+.error { color: #8d1414; }
+
+@media (max-width: 980px) {
+  .app-shell { grid-template-columns: 250px minmax(320px, 1fr); }
+  .sources { display: none; }
+}
+
+@media (max-width: 680px) {
+  .app-shell { display: flex; height: auto; min-height: 100vh; flex-direction: column; overflow: visible; }
+  .settings { border-right: 0; border-bottom: 1px solid #111; }
+  .settings-body { max-height: none; }
+  .chat { min-height: 70vh; }
+  .compute-banner { grid-template-columns: 1fr auto; }
+  .compute-banner span { grid-column: 1 / -1; }
+}

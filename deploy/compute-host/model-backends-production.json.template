@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "embedding": {
+    "baseUrl": "http://127.0.0.1:@PRODUCTION_EMBEDDING_PORT@",
+    "model": "@PRODUCTION_EMBEDDING_MODEL@",
+    "maxCharacters": 2400,
+    "documentKeepAlive": "10m",
+    "queryKeepAlive": "0",
+    "timeoutSeconds": 120
+  },
+  "models": {
+    "@PRODUCTION_APPROVED_MODEL@": {
+      "baseUrl": "http://127.0.0.1:@PRODUCTION_GENERATION_PORT@",
+      "servedModel": "@PRODUCTION_SERVED_MODEL@",
+      "maxTokens": 2048,
+      "timeoutSeconds": 840,
+      "chatTemplateKwargs": {}
+    }
+  }
+}

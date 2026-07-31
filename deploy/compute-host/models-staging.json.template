@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "dockerBinary": "/usr/bin/docker",
+  "models": {
+    "@STAGING_APPROVED_MODEL@": {
+      "container": "@STAGING_TEST_MODEL_CONTAINER@",
+      "stopTimeoutSeconds": 30
+    }
+  }
+}

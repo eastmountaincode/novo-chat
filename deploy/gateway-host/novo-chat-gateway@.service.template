@@ -1,0 +1,30 @@
+[Unit]
+Description=Novo Chat %i gateway container
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/novo-chat/gateway-%i.env
+ConditionPathIsDirectory=/etc/novo-chat/secrets/gateway-%i
+ConditionPathIsDirectory=/var/lib/novo-chat-gateway/%i
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStartPre=-/usr/bin/docker rm novo-chat-gateway-%i
+ExecStart=/usr/bin/docker run --name novo-chat-gateway-%i --network host --read-only --cap-drop=ALL --security-opt=no-new-privileges --pids-limit=512 --memory=768m --memory-swap=768m --user=10001:10001 --env-file=/etc/novo-chat/gateway-%i.env --mount=type=bind,src=/var/lib/novo-chat-gateway/%i,dst=/var/lib/novo-chat-gateway/%i --mount=type=bind,src=/etc/novo-chat/secrets/gateway-%i,dst=/run/secrets,readonly --tmpfs=/tmp:rw,noexec,nosuid,nodev,size=128m @NOVO_CHAT_IMAGE_DIGEST@ gateway
+ExecStop=-/usr/bin/docker stop --time 30 novo-chat-gateway-%i
+ExecStopPost=-/usr/bin/docker rm novo-chat-gateway-%i
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=90
+TimeoutStopSec=45
+MemoryMax=1G
+MemorySwapMax=0
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

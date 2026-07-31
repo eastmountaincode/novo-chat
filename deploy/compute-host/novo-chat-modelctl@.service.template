@@ -1,0 +1,32 @@
+[Unit]
+Description=Novo Chat %i restricted model controller
+Requires=novo-chat-modelctl@%i.socket docker.service
+After=docker.service
+ConditionPathExists=/etc/novo-chat/modelctl-exclusive-containers.json
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/bin/python3 /opt/novo-chat/current/deploy/compute-host/modelctl_server.py --config /etc/novo-chat/models-%i.json --inventory /etc/novo-chat/modelctl-exclusive-containers.json
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HOME=/nonexistent
+StandardOutput=journal
+StandardError=journal
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateNetwork=true
+ProtectSystem=strict
+ReadWritePaths=/run/novo-chat
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=
+SystemCallArchitectures=native

@@ -1,0 +1,32 @@
+[Unit]
+Description=Novo Chat %i reverse tunnel to the gateway host
+After=network-online.target novo-chat-worker@%i.service
+Wants=network-online.target
+Requires=novo-chat-worker@%i.service
+
+[Service]
+Type=simple
+User=novo-chat-tunnel
+Group=novo-chat-tunnel
+ExecStart=/usr/bin/ssh -F /etc/novo-chat/tunnel/%i.conf -N novo-chat-gateway-%i
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectClock=true
+ReadOnlyPaths=/etc/novo-chat/tunnel
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

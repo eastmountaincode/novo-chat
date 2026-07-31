@@ -1,0 +1,4 @@
+# The socket files are 0660 root:novo-chat-modelctl. Their parent must also be
+# traversable by that group. The root-owned controller also creates the shared
+# modelctl-gpu.lock here; workers cannot write this directory or lock file.
+d /run/novo-chat 0750 root novo-chat-modelctl -

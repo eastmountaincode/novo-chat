@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "containers": [
+    "@STAGING_TEST_MODEL_CONTAINER@",
+    "@EXISTING_PRODUCTION_MODEL_CONTAINER@"
+  ]
+}

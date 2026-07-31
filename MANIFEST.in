@@ -1,0 +1,9 @@
+# The installable service contains only the distributed package and project
+# metadata. Tests and host-rendered deployment material are not wheel payloads.
+prune tests
+prune deploy
+prune docs
+recursive-exclude * ._*
+global-exclude ._*
+recursive-exclude * .DS_Store
+recursive-exclude * *.py[cod]

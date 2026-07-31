@@ -1,0 +1,13 @@
+# Jump account: these environment-specific keys can connect only to the gateway
+# host SSH service.
+# A forced false command blocks shell/exec requests but does not interfere with
+# the direct-tcpip channel used by ProxyJump.
+restrict,port-forwarding,permitopen="@GATEWAY_SSH_HOST@:22",command="/bin/false" ssh-ed25519 @STAGING_JUMP_PUBLIC_KEY@ novo-chat-staging-jump
+restrict,port-forwarding,permitopen="@GATEWAY_SSH_HOST@:22",command="/bin/false" ssh-ed25519 @PRODUCTION_JUMP_PUBLIC_KEY@ novo-chat-production-jump
+
+# Gateway-host staging account: only the staging reverse listener is allowed.
+restrict,port-forwarding,permitlisten="127.0.0.1:8196",command="/bin/false" ssh-ed25519 @STAGING_TARGET_PUBLIC_KEY@ novo-chat-staging
+
+# Gateway-host production account: use a different key and account. Only the
+# production reverse listener is allowed.
+restrict,port-forwarding,permitlisten="127.0.0.1:8195",command="/bin/false" ssh-ed25519 @PRODUCTION_TARGET_PUBLIC_KEY@ novo-chat-production

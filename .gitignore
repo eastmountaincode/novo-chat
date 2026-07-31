@@ -1,0 +1,37 @@
+__pycache__/
+*.py[cod]
+._*
+.DS_Store
+.env
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+data/
+logs/
+state/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Site-specific deployment records stay local.  The tracked templates under
+# deploy/ contain placeholders only.
+deploy/PHASE0_AUDIT_*.md
+docs/PRD.md
+
+# Local migration source from the original single-host prototype. The
+# distributed package and public repository do not ship this code or its
+# site-specific evaluation material.
+/novo_rag/
+/web/
+/scripts/
+/experiments/
+/CURRENT_STATUS.md
+/EXAMPLE_QUESTIONS.md
+/WORKLOG.md
+/.env.example
+/requirements.txt
+/deploy/apache-novo-chat.conf.template
+/deploy/novo-chat.service.template
+/tests/live_http_authz.py
+/tests/test_authz.py

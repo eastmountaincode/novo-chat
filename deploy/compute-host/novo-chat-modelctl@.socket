@@ -1,0 +1,15 @@
+[Unit]
+Description=Novo Chat %i restricted model-controller socket
+After=systemd-tmpfiles-setup.service
+
+[Socket]
+ListenStream=/run/novo-chat/%i-modelctl.sock
+Service=novo-chat-modelctl@%i.service
+SocketUser=root
+SocketGroup=novo-chat-modelctl
+SocketMode=0660
+DirectoryMode=0750
+RemoveOnStop=true
+
+[Install]
+WantedBy=sockets.target

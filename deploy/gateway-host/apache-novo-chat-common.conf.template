@@ -1,0 +1,9 @@
+# Install once inside the existing HTTPS virtual host, before its catch-all
+# ProxyPass rule. The gateway calls this API directly on Novo loopback; the
+# public virtual host must never route it.
+
+ProxyPreserveHost On
+ProxyPass "/api/integrations/v1" "!"
+<LocationMatch "^/api/integrations/v1(?:/|$)">
+    Require all denied
+</LocationMatch>

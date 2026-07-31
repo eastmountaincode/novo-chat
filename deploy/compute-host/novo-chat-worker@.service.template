@@ -1,0 +1,31 @@
+[Unit]
+Description=Novo Chat %i unprivileged compute worker container
+Requires=docker.service novo-chat-modelctl@%i.socket
+After=docker.service novo-chat-modelctl@%i.socket network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/novo-chat/worker-%i.env
+ConditionPathExists=/etc/novo-chat/model-backends-%i.json
+ConditionPathIsDirectory=/etc/novo-chat/secrets/worker-%i
+ConditionPathIsDirectory=/var/lib/novo-chat-worker/%i
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStartPre=-/usr/bin/docker rm novo-chat-worker-%i
+ExecStart=/usr/bin/docker run --name novo-chat-worker-%i --network host --read-only --cap-drop=ALL --security-opt=no-new-privileges --pids-limit=2048 --memory=16g --memory-swap=16g --user=10001:10001 --group-add=@MODELCTL_SOCKET_GID@ --env-file=/etc/novo-chat/worker-%i.env --mount=type=bind,src=/var/lib/novo-chat-worker/%i,dst=/var/lib/novo-chat-worker/%i --mount=type=bind,src=/etc/novo-chat/secrets/worker-%i,dst=/run/secrets,readonly --mount=type=bind,src=/etc/novo-chat/model-backends-%i.json,dst=/run/config/model-backends.json,readonly --mount=type=bind,src=/run/novo-chat/%i-modelctl.sock,dst=/run/novo-chat/%i-modelctl.sock --tmpfs=/tmp:rw,noexec,nosuid,nodev,size=1g @NOVO_CHAT_IMAGE_DIGEST@ worker
+ExecStop=-/usr/bin/docker stop --time 45 novo-chat-worker-%i
+ExecStopPost=-/usr/bin/docker rm novo-chat-worker-%i
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=120
+TimeoutStopSec=60
+MemoryMax=17G
+MemorySwapMax=0
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

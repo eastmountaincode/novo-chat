@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="novo-chat-base-path" content="__NOVO_CHAT_BASE_PATH__" />
+    <title>novo chat</title>
+    <link rel="stylesheet" href="static/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="settings">
+        <header class="brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <h1>novo chat</h1>
+        </header>
+
+        <div class="settings-body">
+          <label class="field">
+            <span>Notebook</span>
+            <select id="corpus"></select>
+          </label>
+
+          <div id="indexStatus" class="panel"></div>
+          <button id="indexButton" type="button">Rebuild index</button>
+
+          <label class="field">
+            <span>Context chunks</span>
+            <div class="slider-row">
+              <input id="maxSources" type="range" min="1" max="16" value="6" />
+              <output id="maxSourcesValue">6</output>
+            </div>
+          </label>
+
+          <label class="field">
+            <span>Model</span>
+            <select id="model"></select>
+          </label>
+          <div id="modelStatus" class="panel"></div>
+          <div class="button-row">
+            <button id="startModel" type="button">Start</button>
+            <button id="stopModel" type="button">Stop</button>
+          </div>
+
+          <button id="clearButton" class="secondary" type="button">Clear conversation</button>
+
+          <div class="identity">
+            <strong id="userName"></strong>
+            <span>Access checked live by Novo</span>
+            <a id="novoLink" href="#">Back to Novo</a>
+          </div>
+        </div>
+      </aside>
+
+      <main class="chat">
+        <div id="computeBanner" class="compute-banner" role="status" hidden>
+          <strong>Compute is unavailable.</strong>
+          <span id="computeDetail">The compute service may be offline or reconnecting. Novo is still available.</span>
+          <button id="retryButton" type="button">Retry</button>
+        </div>
+
+        <div class="chat-heading">
+          <span id="activeCorpus">No notebook selected</span>
+          <span aria-hidden="true">/</span>
+          <span id="activeModel">No model selected</span>
+        </div>
+
+        <section id="messages" class="messages" aria-live="polite">
+          <div class="welcome">
+            <h2>Ask your Novo notebooks</h2>
+            <p>Answers are grounded in notebooks your current Novo account can read.</p>
+          </div>
+        </section>
+
+        <form id="askForm" class="composer">
+          <textarea id="question" rows="2" placeholder="Ask a question…" required></textarea>
+          <button id="askButton" type="submit">Send</button>
+        </form>
+      </main>
+
+      <aside class="sources">
+        <header><h2>Retrieved sources</h2></header>
+        <div id="sources" class="source-list"><p class="muted">No retrieval yet.</p></div>
+      </aside>
+    </div>
+    <script src="static/app.js"></script>
+  </body>
+</html>

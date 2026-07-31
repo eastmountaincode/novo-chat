@@ -1,0 +1,29 @@
+# Production uses a separate target account, key, and listener from staging.
+Host novo-chat-jump-production
+    HostName @JUMP_HOST@
+    User @JUMP_TUNNEL_USER@
+    IdentityFile /etc/novo-chat/tunnel/production-jump-ed25519
+    IdentitiesOnly yes
+    BatchMode yes
+    RequestTTY no
+    StrictHostKeyChecking yes
+    UserKnownHostsFile /etc/novo-chat/tunnel/known_hosts
+    ConnectTimeout 10
+    ServerAliveInterval 30
+    ServerAliveCountMax 3
+
+Host novo-chat-gateway-production
+    HostName @GATEWAY_SSH_HOST@
+    HostKeyAlias @GATEWAY_SSH_HOST_KEY_ALIAS@
+    User @PRODUCTION_TARGET_TUNNEL_USER@
+    ProxyJump novo-chat-jump-production
+    IdentityFile /etc/novo-chat/tunnel/production-target-ed25519
+    IdentitiesOnly yes
+    BatchMode yes
+    RequestTTY no
+    StrictHostKeyChecking yes
+    UserKnownHostsFile /etc/novo-chat/tunnel/known_hosts
+    ExitOnForwardFailure yes
+    ServerAliveInterval 30
+    ServerAliveCountMax 3
+    RemoteForward 127.0.0.1:8195 127.0.0.1:8095

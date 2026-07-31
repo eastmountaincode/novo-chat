@@ -1,0 +1,17 @@
+# Production directives for the existing HTTPS virtual host.
+# Keep these before any catch-all ProxyPass rule. No new DNS name or
+# certificate is required: /chat/ stays on the existing Novo origin.
+
+RedirectMatch 308 ^/chat$ /chat/
+ProxyPass        "/chat/" "http://127.0.0.1:3180/chat/" connectiontimeout=5 timeout=900
+ProxyPassReverse "/chat/" "http://127.0.0.1:3180/chat/"
+
+<Location "/chat/">
+    LimitRequestBody 65536
+    RequestHeader set X-Forwarded-Proto "https"
+    RequestHeader set X-Forwarded-Prefix "/chat"
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set Referrer-Policy "same-origin"
+    Header always set X-Frame-Options "SAMEORIGIN"
+    Header always set Cache-Control "private, no-store"
+</Location>

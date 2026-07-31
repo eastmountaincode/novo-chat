@@ -1,0 +1,30 @@
+# All private keys remain on the compute host. Obtain known_hosts entries from
+# an administrator through a trusted channel; do not use accept-new.
+Host novo-chat-jump-staging
+    HostName @JUMP_HOST@
+    User @JUMP_TUNNEL_USER@
+    IdentityFile /etc/novo-chat/tunnel/staging-jump-ed25519
+    IdentitiesOnly yes
+    BatchMode yes
+    RequestTTY no
+    StrictHostKeyChecking yes
+    UserKnownHostsFile /etc/novo-chat/tunnel/known_hosts
+    ConnectTimeout 10
+    ServerAliveInterval 30
+    ServerAliveCountMax 3
+
+Host novo-chat-gateway-staging
+    HostName @GATEWAY_SSH_HOST@
+    HostKeyAlias @GATEWAY_SSH_HOST_KEY_ALIAS@
+    User @STAGING_TARGET_TUNNEL_USER@
+    ProxyJump novo-chat-jump-staging
+    IdentityFile /etc/novo-chat/tunnel/staging-target-ed25519
+    IdentitiesOnly yes
+    BatchMode yes
+    RequestTTY no
+    StrictHostKeyChecking yes
+    UserKnownHostsFile /etc/novo-chat/tunnel/known_hosts
+    ExitOnForwardFailure yes
+    ServerAliveInterval 30
+    ServerAliveCountMax 3
+    RemoteForward 127.0.0.1:8196 127.0.0.1:8096

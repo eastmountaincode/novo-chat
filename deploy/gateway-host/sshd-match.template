@@ -1,0 +1,41 @@
+# Merge into sshd_config only after confirming these directives are supported
+# by the installed OpenSSH version. Replace every @...@ placeholder first.
+
+# Apply on the optional jump host.
+Match User @JUMP_TUNNEL_USER@
+    AuthenticationMethods publickey
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no
+    PermitTTY no
+    X11Forwarding no
+    AllowAgentForwarding no
+    AllowTcpForwarding local
+    PermitOpen @GATEWAY_SSH_HOST@:22
+    GatewayPorts no
+    ForceCommand /bin/false
+
+# Apply on the gateway host. Separate accounts prevent a staging key from
+# creating the production listener or vice versa.
+Match User @STAGING_TARGET_TUNNEL_USER@
+    AuthenticationMethods publickey
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no
+    PermitTTY no
+    X11Forwarding no
+    AllowAgentForwarding no
+    AllowTcpForwarding remote
+    PermitListen 127.0.0.1:8196
+    GatewayPorts no
+    ForceCommand /bin/false
+
+Match User @PRODUCTION_TARGET_TUNNEL_USER@
+    AuthenticationMethods publickey
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no
+    PermitTTY no
+    X11Forwarding no
+    AllowAgentForwarding no
+    AllowTcpForwarding remote
+    PermitListen 127.0.0.1:8195
+    GatewayPorts no
+    ForceCommand /bin/false

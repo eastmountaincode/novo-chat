@@ -1,0 +1,18 @@
+# Optional staging route for the existing HTTPS virtual host. Keep this before
+# any catch-all ProxyPass rule. Restrict @STAGING_ALLOWED_CIDR@ to the approved
+# test network, or omit this public route and test port 3181 over SSH instead.
+
+RedirectMatch 308 ^/chat-staging$ /chat-staging/
+ProxyPass        "/chat-staging/" "http://127.0.0.1:3181/chat-staging/" connectiontimeout=5 timeout=900
+ProxyPassReverse "/chat-staging/" "http://127.0.0.1:3181/chat-staging/"
+
+<Location "/chat-staging/">
+    Require ip @STAGING_ALLOWED_CIDR@
+    LimitRequestBody 65536
+    RequestHeader set X-Forwarded-Proto "https"
+    RequestHeader set X-Forwarded-Prefix "/chat-staging"
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set Referrer-Policy "same-origin"
+    Header always set X-Frame-Options "SAMEORIGIN"
+    Header always set Cache-Control "private, no-store"
+</Location>

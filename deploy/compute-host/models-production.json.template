@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "dockerBinary": "/usr/bin/docker",
+  "models": {
+    "@PRODUCTION_APPROVED_MODEL@": {
+      "container": "@EXISTING_PRODUCTION_MODEL_CONTAINER@",
+      "stopTimeoutSeconds": 30
+    }
+  }
+}

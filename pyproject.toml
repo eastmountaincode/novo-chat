@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "novo-chat"
+version = "0.1.0"
+description = "Optional same-origin Novo gateway and private notebook-compute worker"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.124.4,<1",
+  "httpx>=0.28,<1",
+  "numpy>=1.26,<3",
+  "pydantic>=2.10.6,<3",
+  "rank-bm25>=0.2.2,<1",
+  "requests>=2.32.4,<3",
+  "uvicorn>=0.33,<1",
+]
+
+[project.scripts]
+novo-chat-runtime = "novo_chat.runtime:main"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<10",
+]
+
+[tool.setuptools.packages.find]
+include = ["novo_chat*"]
+
+[tool.setuptools.package-data]
+"novo_chat.gateway" = ["web/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
