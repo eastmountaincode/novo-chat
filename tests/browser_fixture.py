@@ -127,7 +127,7 @@ _settings = GatewaySettings(
     worker_base_url="http://127.0.0.1:8195/internal/v1",
     worker_signing_secret_file=_root / "request",
     worker_response_secret_file=_root / "response",
-    environment="production",
+    environment="staging",
     public_origin="http://127.0.0.1:8765",
     job_db_path=_root / "jobs.sqlite3",
 )

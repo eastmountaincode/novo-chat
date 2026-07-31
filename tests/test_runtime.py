@@ -11,6 +11,7 @@ from novo_chat.runtime import (
     load_gateway_runtime,
     load_worker_runtime,
 )
+from novo_chat.gateway.config import GatewaySettings
 
 
 def write_secret(path: Path, marker: str) -> None:
@@ -116,6 +117,61 @@ class RuntimeConfigurationTests(unittest.TestCase):
         self.assertEqual(runtime.settings.ingest_batch_max_bytes, 24 * 1024 * 1024)
         self.assertEqual(runtime.settings.gateway_max_request_bytes, 64 * 1024)
         self.assertEqual(runtime.settings.job_ownership_ttl_s, 604800)
+
+    def test_staging_gateway_accepts_literal_loopback_http_origin(self) -> None:
+        environment = self.gateway_environment()
+        for public_origin in ("http://127.0.0.1:3182", "http://[::1]:3182"):
+            with self.subTest(public_origin=public_origin):
+                environment["NOVO_CHAT_PUBLIC_ORIGIN"] = public_origin
+                runtime = load_gateway_runtime(environment)
+                self.assertEqual(runtime.settings.public_origin, public_origin)
+
+    def test_http_public_origin_requires_staging_and_literal_loopback(self) -> None:
+        environment = self.gateway_environment()
+        for public_origin in (
+            "http://localhost:3182",
+            "http://127.0.0.2:3182",
+            "http://novo.example.test",
+        ):
+            with self.subTest(public_origin=public_origin):
+                environment["NOVO_CHAT_PUBLIC_ORIGIN"] = public_origin
+                with self.assertRaisesRegex(RuntimeConfigurationError, "literal staging loopback"):
+                    load_gateway_runtime(environment)
+
+        environment.update(
+            {
+                "NOVO_CHAT_ENVIRONMENT": "production",
+                "NOVO_CHAT_PORT": "3180",
+                "NOVO_CHAT_BASE_PATH": "/chat",
+                "NOVO_CHAT_PUBLIC_ORIGIN": "http://127.0.0.1:3182",
+            }
+        )
+        with self.assertRaisesRegex(RuntimeConfigurationError, "literal staging loopback"):
+            load_gateway_runtime(environment)
+
+    def test_gateway_settings_apply_same_public_origin_rule_without_runtime(self) -> None:
+        self.assertEqual(
+            GatewaySettings(
+                environment="staging",
+                public_origin="http://127.0.0.1:3182/",
+            ).public_origin,
+            "http://127.0.0.1:3182",
+        )
+        for environment, public_origin in (
+            ("production", "http://127.0.0.1:3182"),
+            ("staging", "http://localhost:3182"),
+        ):
+            with self.subTest(environment=environment, public_origin=public_origin):
+                with self.assertRaisesRegex(ValueError, "literal staging loopback"):
+                    GatewaySettings(environment=environment, public_origin=public_origin)
+
+        self.assertEqual(
+            GatewaySettings(
+                environment="production",
+                public_origin="https://novo.example.test/",
+            ).public_origin,
+            "https://novo.example.test",
+        )
 
     def test_gateway_retention_and_ingest_byte_cap_are_configurable(self) -> None:
         environment = self.gateway_environment()

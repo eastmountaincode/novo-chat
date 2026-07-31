@@ -136,6 +136,8 @@ class DeploymentTemplateTests(unittest.TestCase):
         self.assertEqual(production_gateway["NOVO_CHAT_GATEWAY_MAX_REQUEST_BYTES"], "65536")
         self.assertEqual(staging_gateway["NOVO_CHAT_JOB_OWNERSHIP_TTL_S"], "604800")
         self.assertEqual(production_gateway["NOVO_CHAT_JOB_OWNERSHIP_TTL_S"], "604800")
+        self.assertEqual(staging_gateway["NOVO_CHAT_PUBLIC_ORIGIN"], "@STAGING_PUBLIC_ORIGIN@")
+        self.assertEqual(production_gateway["NOVO_CHAT_PUBLIC_ORIGIN"], "https://@PUBLIC_HOST@")
         for values in (staging_gateway, production_gateway, staging_worker, production_worker):
             self.assertEqual(values["NOVO_CHAT_BIND_HOST"], "127.0.0.1")
         self.assertNotEqual(
@@ -232,6 +234,21 @@ class DeploymentTemplateTests(unittest.TestCase):
             self.assertNotIn("SSLCertificate", snippet)
             self.assertNotIn("<VirtualHost", snippet)
 
+    def test_staging_caddy_mux_is_loopback_only_and_preserves_one_origin(self) -> None:
+        caddy = read("gateway-host/Caddyfile-staging-mux.template")
+        self.assertIn("http://127.0.0.1:3182", caddy)
+        self.assertNotIn("0.0.0.0", caddy)
+        self.assertIn("admin off", caddy)
+        self.assertRegex(caddy, r"path /api/integrations/v1 /api/integrations/v1/\*")
+        self.assertRegex(caddy, r"handle @privateIntegration \{[\s\S]*?respond 404")
+        self.assertRegex(caddy, r"path /chat-staging /chat-staging/\*")
+        self.assertIn("reverse_proxy 127.0.0.1:3181", caddy)
+        self.assertIn("reverse_proxy 127.0.0.1:3155", caddy)
+        self.assertIn("max_size 64KB", caddy)
+        self.assertIn('X-Content-Type-Options "nosniff"', caddy)
+        self.assertIn('Referrer-Policy "same-origin"', caddy)
+        self.assertIn('X-Frame-Options "SAMEORIGIN"', caddy)
+
     def test_public_templates_do_not_contain_site_accounts_or_hostnames(self) -> None:
         forbidden = re.compile(
             r"(?i)(?:/Users/|/home/[a-z0-9._-]+|/mnt/|(?:[a-z0-9-]+\.)+(?:edu|org)\b)"
@@ -271,6 +288,7 @@ class DeploymentTemplateTests(unittest.TestCase):
             "@STAGING_EMBEDDING_PORT@",
             "@STAGING_GENERATION_PORT@",
             "@STAGING_JUMP_PUBLIC_KEY@",
+            "@STAGING_PUBLIC_ORIGIN@",
             "@STAGING_SERVED_MODEL@",
             "@STAGING_TARGET_PUBLIC_KEY@",
             "@STAGING_TARGET_TUNNEL_USER@",

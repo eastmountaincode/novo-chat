@@ -15,6 +15,7 @@ adopting site-specific names.
 | Resource | Staging | Production |
 | --- | --- | --- |
 | Gateway listener | `127.0.0.1:3181` | `127.0.0.1:3180` |
+| One-origin browser mux | `127.0.0.1:3182` | existing HTTPS virtual host |
 | Novo loopback API | `127.0.0.1:3155` | `127.0.0.1:3148` |
 | Reverse listener on gateway host | `127.0.0.1:8196` | `127.0.0.1:8195` |
 | Worker listener on compute host | `127.0.0.1:8096` | `127.0.0.1:8095` |
@@ -92,8 +93,10 @@ ending in `_FILE` must be an absolute container path under `/run/secrets`.
 ## 3. Install the staging gateway container
 
 1. Copy and render `gateway-host/gateway-staging.env.template` as
-   `/etc/novo-chat/gateway-staging.env`. Replace `@PUBLIC_HOST@`; reject any
-   remaining `@...@` token.
+   `/etc/novo-chat/gateway-staging.env`. For the loopback tunnel described in
+   step 7, replace `@STAGING_PUBLIC_ORIGIN@` with
+   `http://127.0.0.1:3182`. The value must exactly equal the browser-visible
+   origin, including its port. Reject any remaining `@...@` token.
 2. Create `/var/lib/novo-chat-gateway/staging` as `10001:10001` mode `0750`.
 3. Create `/etc/novo-chat/secrets/gateway-staging` and the four files above with
    the ownership and modes from step 2.
@@ -255,7 +258,57 @@ Confirm `127.0.0.1:8196` exists on the gateway host and is not bound to `0.0.0.0
 or `::`. Stop the tunnel and confirm the listener disappears, then restart it.
 The gateway should degrade cleanly while the listener is absent.
 
-## 7. Add the staging Apache route
+## 7. Expose staging through one browser origin
+
+The simplest private staging test uses one SSH local forward and the supplied
+`gateway-host/Caddyfile-staging-mux.template`. The Caddy listener binds only to
+gateway-host loopback port `3182`. It sends `/chat-staging` and its descendants
+to the Chat gateway on `3181`, sends every other browser path to Novo staging on
+`3155`, and returns `404` for the private integration API before either proxy.
+This is important: tunneling `3155` and `3181` to different local ports would
+give Novo and Chat different browser origins, so the Novo session cookie and
+same-origin request checks would not compose correctly.
+
+Configure the Novo staging instance with `NOVO_CHAT_URL=/chat-staging/` and the
+matching integration-token file. If that staging instance runs a production
+Next.js build, it must also use its existing staging-only
+`ELN_ALLOW_INSECURE_COOKIES=true` option so the browser can return the Novo
+session cookie over this HTTP loopback origin. Never enable that option in
+production. Restart Novo staging after changing these settings, then sign in
+again through the mux origin.
+
+Install the reviewed Caddyfile as a dedicated, always-on Caddy 2.10 or newer
+instance using the gateway host's service manager. Version 2.10 is required for
+the streaming `request_body` size limit. Do not merge it into a public
+listener. Validate it with the installed Caddy version, start it, and confirm
+that only IPv4 loopback owns `3182`:
+
+```bash
+caddy validate --config /etc/novo-chat/Caddyfile-staging-mux --adapter caddyfile
+ss -ltnp | grep ':3182[[:space:]]'
+curl -fsS http://127.0.0.1:3182/
+test "$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:3182/api/integrations/v1/context)" = 404
+```
+
+From the tester's workstation, forward that one mux port and leave the SSH
+process running:
+
+```bash
+ssh -N -L 127.0.0.1:3182:127.0.0.1:3182 gateway-host-alias
+```
+
+Then open `http://127.0.0.1:3182/`, sign in to Novo staging normally, and follow
+the Chat link at `http://127.0.0.1:3182/chat-staging/`. Use exactly
+`127.0.0.1`, not `localhost`, because the staging HTTP exception is restricted
+to literal loopback origins. If local port `3182` is unavailable, choose one
+other local port, set `NOVO_CHAT_PUBLIC_ORIGIN` to that exact loopback origin,
+and forward it to gateway-host port `3182`; restart the gateway after changing
+the origin.
+
+Plain HTTP is accepted only for this staging loopback workflow. Production
+continues to require a bare HTTPS origin.
+
+### Optional staging Apache route
 
 Back up the active virtual-host configuration first. Confirm that `mod_proxy`,
 `mod_proxy_http`, `mod_headers`, and `mod_alias` are enabled. Inside the existing
@@ -266,7 +319,7 @@ TLS virtual host, before its catch-all proxy:
    otherwise proxy it.
 2. Optionally render `apache-novo-chat-staging.conf.template`, replacing
    `@STAGING_ALLOWED_CIDR@`, or leave staging unadvertised and test gateway port
-   `3181` through an administrator SSH tunnel.
+   `3181` through the one-origin tunnel above.
 3. Run the platform's Apache configuration test and inspect the full rendered
    virtual host before a graceful reload.
 
@@ -280,8 +333,8 @@ authenticated user sees only currently permitted notebooks.
 Record command output and timestamps for all of the following:
 
 ```bash
-ss -ltnp | grep -E ':(3181|8196)[[:space:]]'
-curl -fsS http://127.0.0.1:3181/chat-staging/healthz
+ss -ltnp | grep -E ':(3181|3182|8196)[[:space:]]'
+curl -fsS http://127.0.0.1:3182/chat-staging/healthz
 systemctl is-active novo-chat-gateway@staging.service
 systemctl is-active novo-chat-worker@staging.service
 systemctl is-active novo-chat-tunnel@staging.service

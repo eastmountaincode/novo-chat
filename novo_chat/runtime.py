@@ -21,7 +21,7 @@ from urllib.parse import urlsplit
 
 import uvicorn
 
-from .gateway.config import GatewaySettings
+from .gateway.config import GatewaySettings, validate_public_origin
 from .model_backend import HttpModelBackend, load_model_backend_document
 from .model_controller import UnixSocketModelController
 from .worker import WorkerConfig
@@ -262,23 +262,13 @@ def load_gateway_runtime(environment: Mapping[str, str] | None = None) -> Gatewa
         raise RuntimeConfigurationError(
             f"NOVO_CHAT_BASE_PATH must be {BASE_PATHS[deployment]} for {deployment}"
         )
-    public_origin = _value(values, "NOVO_CHAT_PUBLIC_ORIGIN")
-    origin = urlsplit(public_origin)
     try:
-        origin.port
+        public_origin = validate_public_origin(
+            _value(values, "NOVO_CHAT_PUBLIC_ORIGIN"),
+            deployment,
+        )
     except ValueError as exc:
-        raise RuntimeConfigurationError("NOVO_CHAT_PUBLIC_ORIGIN contains an invalid port") from exc
-    if (
-        origin.scheme != "https"
-        or not origin.netloc
-        or not origin.hostname
-        or origin.username
-        or origin.password
-        or origin.query
-        or origin.fragment
-        or origin.path not in {"", "/"}
-    ):
-        raise RuntimeConfigurationError("NOVO_CHAT_PUBLIC_ORIGIN must be a bare HTTPS origin")
+        raise RuntimeConfigurationError(str(exc)) from exc
 
     novo_url = _loopback_url(
         _value(values, "NOVO_INTEGRATION_API_URL"),

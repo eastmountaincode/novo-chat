@@ -1,0 +1,38 @@
+{
+    admin off
+    auto_https off
+}
+
+# Loopback-only staging origin for one SSH local forward. The browser reaches
+# Novo and Novo Chat through the same origin, so the Novo session cookie and
+# same-origin CSRF checks continue to work without publishing a staging route.
+http://127.0.0.1:3182 {
+    @privateIntegration path /api/integrations/v1 /api/integrations/v1/*
+    handle @privateIntegration {
+        header Cache-Control "private, no-store"
+        respond 404
+    }
+
+    @chat path /chat-staging /chat-staging/*
+    handle @chat {
+        request_body {
+            max_size 64KB
+        }
+        header {
+            Cache-Control "private, no-store"
+            Referrer-Policy "same-origin"
+            X-Content-Type-Options "nosniff"
+            X-Frame-Options "SAMEORIGIN"
+        }
+        reverse_proxy 127.0.0.1:3181 {
+            header_up X-Forwarded-Proto "http"
+            header_up X-Forwarded-Prefix "/chat-staging"
+        }
+    }
+
+    handle {
+        reverse_proxy 127.0.0.1:3155 {
+            header_up X-Forwarded-Proto "http"
+        }
+    }
+}

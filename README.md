@@ -88,6 +88,7 @@ Audited defaults:
 | Role | Staging | Production |
 | --- | ---: | ---: |
 | Gateway listener | `127.0.0.1:3181` | `127.0.0.1:3180` |
+| Private browser mux | `127.0.0.1:3182` | existing HTTPS virtual host |
 | Compute worker | `127.0.0.1:8096` | `127.0.0.1:8095` |
 | Reverse-forward listener | `127.0.0.1:8196` | `127.0.0.1:8195` |
 
@@ -100,6 +101,13 @@ together so staging/production isolation remains reviewable.
 The `/chat/` production route uses the Novo site's existing DNS name and TLS
 certificate. It does not require a new DNS record or a certificate for the
 compute host.
+
+Staging can instead use a single SSH-forwarded loopback origin. A loopback-only
+Caddy mux on gateway-host port `3182` presents Novo staging and
+`/chat-staging/` on the same browser origin. Plain HTTP public origins are
+accepted only for `staging` with the literal host `127.0.0.1` or `::1`;
+production remains HTTPS-only. See the deployment checklist for the exact
+one-port tunnel.
 
 ## Local development
 

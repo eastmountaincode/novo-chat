@@ -47,6 +47,40 @@ def _loopback_url(value: str, setting: str) -> str:
     return value.rstrip("/")
 
 
+def validate_public_origin(value: str, environment: str) -> str:
+    """Validate the browser-visible origin for one deployed gateway.
+
+    Production is always HTTPS.  Staging may additionally use plain HTTP when
+    the browser reaches the service through a local SSH forward; that exception
+    is deliberately limited to the two literal loopback addresses so a DNS
+    name cannot silently turn the staging deployment into a clear-text site.
+    """
+
+    parsed = urlsplit(value)
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise ValueError("NOVO_CHAT_PUBLIC_ORIGIN contains an invalid port") from exc
+    if (
+        not parsed.netloc
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in {"", "/"}
+    ):
+        raise ValueError("NOVO_CHAT_PUBLIC_ORIGIN must contain only a bare HTTP(S) origin")
+    if parsed.scheme == "http":
+        if environment != "staging" or parsed.hostname not in {"127.0.0.1", "::1"}:
+            raise ValueError(
+                "NOVO_CHAT_PUBLIC_ORIGIN permits HTTP only for a literal staging loopback origin"
+            )
+    elif parsed.scheme != "https":
+        raise ValueError("NOVO_CHAT_PUBLIC_ORIGIN must use HTTPS")
+    return value.rstrip("/")
+
+
 @dataclass(frozen=True, slots=True)
 class GatewaySettings:
     """Configuration for the public gateway.
@@ -96,17 +130,18 @@ class GatewaySettings:
         object.__setattr__(self, "novo_home_path", _same_origin_path(self.novo_home_path, "NOVO_HOME_PATH"))
         object.__setattr__(self, "novo_login_path", _same_origin_path(self.novo_login_path, "NOVO_LOGIN_PATH"))
         object.__setattr__(self, "novo_logout_path", _same_origin_path(self.novo_logout_path, "NOVO_LOGOUT_PATH"))
+        if not _ENVIRONMENT.fullmatch(self.environment):
+            raise ValueError("NOVO_CHAT_ENVIRONMENT must be a lowercase protocol environment")
         if self.public_origin:
-            parsed = urlsplit(self.public_origin)
-            if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.path not in {"", "/"}:
-                raise ValueError("NOVO_CHAT_PUBLIC_ORIGIN must contain only an HTTP(S) origin")
-            object.__setattr__(self, "public_origin", self.public_origin.rstrip("/"))
+            object.__setattr__(
+                self,
+                "public_origin",
+                validate_public_origin(self.public_origin, self.environment),
+            )
         if not _COOKIE_NAME.fullmatch(self.novo_session_cookie_name):
             raise ValueError("NOVO_SESSION_COOKIE_NAME must be a valid cookie token")
         if not _KEY_ID.fullmatch(self.worker_request_key_id) or not _KEY_ID.fullmatch(self.worker_response_key_id):
             raise ValueError("worker signing key IDs must be valid protocol identifiers")
-        if not _ENVIRONMENT.fullmatch(self.environment):
-            raise ValueError("NOVO_CHAT_ENVIRONMENT must be a lowercase protocol environment")
         if not _PROTOCOL_TOKEN.fullmatch(self.index_schema_version):
             raise ValueError("NOVO_CHAT_INDEX_SCHEMA_VERSION must be a valid protocol token")
         if self.request_timeout_s <= 0 or self.worker_job_timeout_s <= 0 or self.worker_poll_interval_s <= 0:
