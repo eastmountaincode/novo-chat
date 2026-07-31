@@ -534,7 +534,7 @@ function renderContextMeter(result) {
   const percent = Math.min(100, (Number(timings.prompt_eval_count) / Number(timings.num_ctx)) * 100);
   el.contextMeter.innerHTML = `
     <div class="meter-label"><span>Context</span><span>${percent.toFixed(0)}% full</span></div>
-    <progress class="context-progress" max="100" value="${percent.toFixed(0)}">${percent.toFixed(0)}%</progress>
+    <progress class="context-progress" max="100" value="${percent}">${percent.toFixed(0)}%</progress>
     <div class="mono meter-text">${formatInt(timings.prompt_eval_count)} / ${formatInt(timings.num_ctx)} tokens</div>
   `;
 }

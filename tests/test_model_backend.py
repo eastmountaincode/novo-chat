@@ -238,11 +238,22 @@ def test_embedding_generation_and_readiness_use_only_the_fake_session() -> None:
             FakeResponse({"embedding": [3.0, 4.0]}),
             FakeResponse({"embedding": [0.0, 5.0]}),
             FakeResponse({"embedding": [8.0, 6.0]}),
-            FakeResponse({"choices": [{"message": {"content": "Grounded answer [1]"}}]}),
+            FakeResponse(
+                {
+                    "choices": [{"message": {"content": "Grounded answer [1]"}}],
+                    "usage": {
+                        "prompt_tokens": 12_345,
+                        "completion_tokens": 20,
+                        "total_tokens": 12_365,
+                    },
+                }
+            ),
         ],
         gets=[FakeResponse(status_code=503), FakeResponse(status_code=200)],
     )
-    backend = HttpModelBackend(ModelBackendDocument.model_validate(valid_config()), session=session)
+    configuration = valid_config()
+    configuration["models"]["model:a"]["maxModelLen"] = 262_144
+    backend = HttpModelBackend(ModelBackendDocument.model_validate(configuration), session=session)
     scope = NotebookScope(
         notebook_id="notebook-a",
         content_revision="sha256:" + "a" * 64,
@@ -262,7 +273,7 @@ def test_embedding_generation_and_readiness_use_only_the_fake_session() -> None:
             "text": "Grounding text",
         }
     ]
-    answer = backend.generate("What happened?", hits, model="model:a", max_sources=1)
+    result = backend.generate("What happened?", hits, model="model:a", max_sources=1)
     with patch("novo_chat.model_backend.time.sleep", return_value=None):
         ready = backend.wait_until_ready("model:a", timeout_seconds=1)
 
@@ -270,7 +281,11 @@ def test_embedding_generation_and_readiness_use_only_the_fake_session() -> None:
     assert vectors.dtype == np.float32
     np.testing.assert_array_equal(vectors, np.asarray([[3.0, 4.0], [0.0, 5.0]], dtype=np.float32))
     np.testing.assert_array_equal(query, np.asarray([8.0, 6.0], dtype=np.float32))
-    assert answer == "Grounded answer [1]"
+    assert result.answer == "Grounded answer [1]"
+    assert result.model_dump(mode="json", by_alias=True)["timings"] == {
+        "prompt_eval_count": 12_345,
+        "num_ctx": 262_144,
+    }
     assert ready is True
     assert backend.is_ready("unknown-model") is False
 
@@ -305,10 +320,70 @@ def test_no_hit_generation_returns_exact_answer_without_network() -> None:
     session = FakeSession()
     backend = HttpModelBackend(ModelBackendDocument.model_validate(valid_config()), session=session)
 
-    answer = backend.generate("Unknown?", [], model="model:a", max_sources=4)
+    result = backend.generate("Unknown?", [], model="model:a", max_sources=4)
 
-    assert answer == NO_INFORMATION
+    assert result.answer == NO_INFORMATION
+    assert result.timings is None
     assert session.post_calls == []
+
+
+def test_generation_without_usage_remains_backward_compatible() -> None:
+    session = FakeSession(
+        posts=[FakeResponse({"choices": [{"message": {"content": "Grounded answer [1]"}}]})]
+    )
+    configuration = valid_config()
+    configuration["models"]["model:a"]["maxModelLen"] = 262_144
+    backend = HttpModelBackend(ModelBackendDocument.model_validate(configuration), session=session)
+
+    result = backend.generate(
+        "Question",
+        [{"source_idx": 1, "text": "source"}],
+        model="model:a",
+        max_sources=1,
+    )
+
+    assert result.answer == "Grounded answer [1]"
+    assert result.timings is None
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [
+        None,
+        {},
+        {"prompt_tokens": 0},
+        {"prompt_tokens": -1},
+        {"prompt_tokens": True},
+        {"prompt_tokens": 12.5},
+        {"prompt_tokens": "123"},
+        {"prompt_tokens": 2_000_001},
+    ],
+)
+def test_generation_rejects_malformed_vllm_usage(usage: Any) -> None:
+    session = FakeSession(
+        posts=[
+            FakeResponse(
+                {
+                    "choices": [{"message": {"content": "Grounded answer [1]"}}],
+                    "usage": usage,
+                }
+            )
+        ]
+    )
+    configuration = valid_config()
+    configuration["models"]["model:a"]["maxModelLen"] = 262_144
+    backend = HttpModelBackend(ModelBackendDocument.model_validate(configuration), session=session)
+
+    with pytest.raises(ComputeError) as invalid:
+        backend.generate(
+            "Question",
+            [{"source_idx": 1, "text": "source"}],
+            model="model:a",
+            max_sources=1,
+        )
+
+    assert invalid.value.code == "GENERATION_UNAVAILABLE"
+    assert invalid.value.retryable is True
 
 
 def test_unknown_model_and_unavailable_backend_fail_closed() -> None:

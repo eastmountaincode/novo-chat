@@ -430,11 +430,26 @@ class Citation(ProtocolModel):
         return validate_same_origin_path(value)
 
 
+class QueryTimings(ProtocolModel):
+    """Validated context utilization using the original Novo Chat wire keys."""
+
+    prompt_eval_count: int = Field(alias="prompt_eval_count", ge=1, le=2_000_000, strict=True)
+    num_ctx: int = Field(alias="num_ctx", ge=1, le=2_000_000, strict=True)
+
+
+class GenerationResult(ProtocolModel):
+    """Typed result returned by a generation backend to the query engine."""
+
+    answer: str
+    timings: QueryTimings | None = None
+
+
 class QueryJobResult(ProtocolModel):
     kind: str = Field(default="query", pattern="^query$")
     answer: str
     model: str
     citations: tuple[Citation, ...]
+    timings: QueryTimings | None = None
 
 
 class IndexJobResult(ProtocolModel):
@@ -936,6 +951,7 @@ __all__ = [
     "CapabilitiesResponse",
     "Citation",
     "ErrorResponse",
+    "GenerationResult",
     "HealthResponse",
     "IndexJobResult",
     "IndexStatusItem",
@@ -965,6 +981,7 @@ __all__ = [
     "QueryJobResult",
     "QueryRequest",
     "QueryStrategy",
+    "QueryTimings",
     "RebuildRequest",
     "VerifiedRequest",
     "VerifiedResponse",

@@ -87,6 +87,7 @@ class FixtureWorker:
                 "kind": "query",
                 "answer": "The recorded response increased after treatment [1].",
                 "model": payload["model"],
+                "timings": {"prompt_eval_count": 8192, "num_ctx": 32768},
                 "citations": [
                     {
                         "notebookId": notebook_id,

@@ -15,7 +15,7 @@ import requests
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .compute import ComputeError
-from .protocol import ModelDisplayDetails, NotebookScope
+from .protocol import GenerationResult, ModelDisplayDetails, NotebookScope, QueryTimings
 from .rag_core import generation_messages
 
 
@@ -51,6 +51,14 @@ def _loopback_origin(value: str) -> str:
 
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+
+class _VllmUsage(BaseModel):
+    """The small validated subset of the OpenAI-compatible usage object we consume."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    prompt_tokens: int = Field(ge=1, le=2_000_000, strict=True)
 
 
 class EmbeddingBackendConfig(_StrictModel):
@@ -233,9 +241,11 @@ class HttpModelBackend:
         *,
         model: str,
         max_sources: int,
-    ) -> str:
+    ) -> GenerationResult:
         if not hits:
-            return "The provided documents do not contain this information."
+            return GenerationResult(
+                answer="The provided documents do not contain this information."
+            )
         backend = self.config.models.get(model)
         if backend is None:
             raise ComputeError("MODEL_NOT_APPROVED", "Requested model is not available.")
@@ -255,8 +265,19 @@ class HttpModelBackend:
                 timeout=backend.timeout_seconds,
             )
             response.raise_for_status()
-            choice = (response.json().get("choices") or [{}])[0]
+            document = response.json()
+            if not isinstance(document, Mapping):
+                raise ValueError("generation response must be an object")
+            choice = (document.get("choices") or [{}])[0]
             answer = str((choice.get("message") or {}).get("content") or "").strip()
+            timings = None
+            if "usage" in document:
+                usage = _VllmUsage.model_validate(document["usage"])
+                if backend.max_model_len is not None:
+                    timings = QueryTimings(
+                        prompt_eval_count=usage.prompt_tokens,
+                        num_ctx=backend.max_model_len,
+                    )
         except (requests.RequestException, AttributeError, IndexError, TypeError, ValueError) as exc:
             raise ComputeError(
                 "GENERATION_UNAVAILABLE",
@@ -269,7 +290,7 @@ class HttpModelBackend:
                 "The configured generation service returned no answer.",
                 retryable=True,
             )
-        return answer
+        return GenerationResult(answer=answer, timings=timings)
 
     def is_ready(self, model: str) -> bool:
         backend = self.config.models.get(model)

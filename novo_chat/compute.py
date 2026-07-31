@@ -24,6 +24,7 @@ from .documents import FinalizedDocument
 from .jobs import ActiveIndex
 from .protocol import (
     Citation,
+    GenerationResult,
     MAX_CITATION_EXCERPT_CHARS,
     NotebookScope,
     PageDocument,
@@ -60,7 +61,7 @@ class ComputeBackend(Protocol):
         *,
         model: str,
         max_sources: int,
-    ) -> str:
+    ) -> str | GenerationResult:
         ...
 
 
@@ -411,8 +412,15 @@ class IndexRepository:
             chunks.extend(dict(chunk) for chunk in artifact.chunks)
 
         if not chunks:
-            answer = self.backend.generate(question, (), model=model, max_sources=max_sources)
-            return QueryJobResult(answer=self._validated_answer(str(answer), ()), model=model, citations=())
+            generation = self._generation_result(
+                self.backend.generate(question, (), model=model, max_sources=max_sources)
+            )
+            return QueryJobResult(
+                answer=self._validated_answer(generation.answer, ()),
+                model=model,
+                citations=(),
+                timings=generation.timings,
+            )
         vectors = np.vstack(vector_sets).astype(np.float32, copy=False)
         ranked_hits = self._retrieve(
             chunks,
@@ -422,10 +430,10 @@ class IndexRepository:
             count=retrieval_top_k,
         )
         prompt_hits = ranked_hits[:max_sources]
-        answer = self._validated_answer(
-            str(self.backend.generate(question, prompt_hits, model=model, max_sources=max_sources)),
-            prompt_hits,
+        generation = self._generation_result(
+            self.backend.generate(question, prompt_hits, model=model, max_sources=max_sources)
         )
+        answer = self._validated_answer(generation.answer, prompt_hits)
         citations = tuple(
             Citation(
                 source_idx=int(hit["source_idx"]),
@@ -443,7 +451,25 @@ class IndexRepository:
             )
             for position, hit in enumerate(ranked_hits, start=1)
         )
-        return QueryJobResult(answer=str(answer), model=model, citations=citations)
+        return QueryJobResult(
+            answer=answer,
+            model=model,
+            citations=citations,
+            timings=generation.timings,
+        )
+
+    @staticmethod
+    def _generation_result(value: Any) -> GenerationResult:
+        if isinstance(value, str):
+            return GenerationResult(answer=value)
+        try:
+            return GenerationResult.model_validate(value)
+        except (TypeError, ValueError) as exc:
+            raise ComputeError(
+                "GENERATION_RESULT_INVALID",
+                "The configured generation service returned an invalid result.",
+                retryable=True,
+            ) from exc
 
     @staticmethod
     def _validated_answer(answer: str, hits: Sequence[Mapping[str, Any]]) -> str:

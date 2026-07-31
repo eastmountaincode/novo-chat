@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from novo_chat.protocol import (
     CapabilitiesResponse,
     Citation,
+    GenerationResult,
     InMemoryReplayGuard,
     IndexStatusItem,
     MAX_CITATION_EXCERPT_CHARS,
@@ -14,7 +15,9 @@ from novo_chat.protocol import (
     NotebookScope,
     PageDocument,
     ProtocolError,
+    QueryJobResult,
     QueryRequest,
+    QueryTimings,
     RebuildRequest,
     canonical_json,
     canonicalize_query,
@@ -157,6 +160,33 @@ class CanonicalProtocolTests(unittest.TestCase):
 
 
 class ProtocolModelTests(unittest.TestCase):
+    def test_query_timings_are_optional_strict_and_keep_original_wire_keys(self):
+        legacy = QueryJobResult(answer="Answer", model="model:a", citations=())
+        self.assertIsNone(legacy.timings)
+
+        timings = QueryTimings(prompt_eval_count=12_345, num_ctx=262_144)
+        generation = GenerationResult(answer="Answer [1]", timings=timings)
+        result = QueryJobResult(
+            answer=generation.answer,
+            model="model:a",
+            citations=(),
+            timings=generation.timings,
+        )
+        self.assertEqual(
+            result.model_dump(mode="json", by_alias=True)["timings"],
+            {"prompt_eval_count": 12_345, "num_ctx": 262_144},
+        )
+
+        for values in (
+            {"prompt_eval_count": 0, "num_ctx": 262_144},
+            {"prompt_eval_count": True, "num_ctx": 262_144},
+            {"prompt_eval_count": "12345", "num_ctx": 262_144},
+            {"prompt_eval_count": 12_345, "num_ctx": 0},
+            {"prompt_eval_count": 12_345, "num_ctx": 262_144, "unknown": 1},
+        ):
+            with self.subTest(values=values), self.assertRaises(ValidationError):
+                QueryTimings.model_validate(values)
+
     def test_capabilities_model_details_are_typed_additive_and_camel_cased(self):
         common = {
             "requestId": REQUEST_ID,

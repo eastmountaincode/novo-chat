@@ -19,6 +19,7 @@ from novo_chat.protocol import (
     JobSubmissionResponse,
     JobView,
     QueryJobResult,
+    QueryTimings,
     canonical_json,
     ingest_pages_checksum,
     sign_response,
@@ -261,7 +262,12 @@ def test_worker_client_signs_exact_typed_body_and_has_no_cookie_channel(tmp_path
                 created_at="2026-07-31T12:00:00Z",
                 updated_at="2026-07-31T12:00:01Z",
                 progress=1.0,
-                result=QueryJobResult(answer="Answer", model="approved-model", citations=()),
+                result=QueryJobResult(
+                    answer="Answer",
+                    model="approved-model",
+                    citations=(),
+                    timings=QueryTimings(prompt_eval_count=12_345, num_ctx=262_144),
+                ),
             ),
         )
         response_body = canonical_json(response_model)
@@ -308,6 +314,10 @@ def test_worker_client_signs_exact_typed_body_and_has_no_cookie_channel(tmp_path
                 },
             )
             assert result["job"]["jobId"] == "job-1"
+            assert result["job"]["result"]["timings"] == {
+                "prompt_eval_count": 12_345,
+                "num_ctx": 262_144,
+            }
 
     asyncio.run(exercise())
     assert seen_body["actorUserId"] == "user-1"

@@ -251,6 +251,8 @@ a {
   border-radius: 0;
   background: #fff;
   color: #000;
+  accent-color: #000;
+  -webkit-appearance: none;
   appearance: none;
 }
 

@@ -17,10 +17,12 @@ from novo_chat.executor import WorkerExecutor
 from novo_chat.jobs import JobStore
 from novo_chat.model_controller import UnixSocketModelController
 from novo_chat.protocol import (
+    GenerationResult,
     JobOperation,
     JobState,
     NotebookScope,
     PageDocument,
+    QueryTimings,
     document_pages_checksum,
     ingest_pages_checksum,
 )
@@ -31,6 +33,7 @@ class FakeBackend:
         self.fail_revisions: set[str] = set()
         self.last_hits: list[dict[str, Any]] = []
         self.answer_override: str | None = None
+        self.timings: QueryTimings | None = None
 
     @staticmethod
     def vector(text: str) -> np.ndarray:
@@ -64,13 +67,16 @@ class FakeBackend:
         *,
         model: str,
         max_sources: int,
-    ) -> str:
+    ) -> str | GenerationResult:
         self.last_hits = [dict(hit) for hit in hits]
         if self.answer_override is not None:
             return self.answer_override
         if not hits:
             return "The provided documents do not contain this information."
-        return f"Grounded {question} [{hits[0]['source_idx']}]"
+        answer = f"Grounded {question} [{hits[0]['source_idx']}]"
+        if self.timings is not None:
+            return GenerationResult(answer=answer, timings=self.timings)
+        return answer
 
 
 class FakeReadiness:
@@ -221,6 +227,7 @@ class WorkerExecutionTests(unittest.TestCase):
         rebuilt = self.rebuild((alpha, beta, empty))
         self.assertEqual(rebuilt.state, JobState.SUCCEEDED)
         self.assertTrue(all(self.store.index_status((alpha, beta, empty), environment="staging")))
+        self.backend.timings = QueryTimings(prompt_eval_count=12_345, num_ctx=262_144)
 
         query = self.submit(
             JobOperation.QUERY,
@@ -236,6 +243,10 @@ class WorkerExecutionTests(unittest.TestCase):
         completed = self.execute(query)
         self.assertEqual(completed.state, JobState.SUCCEEDED)
         self.assertEqual(completed.result["kind"], "query")
+        self.assertEqual(
+            completed.result["timings"],
+            {"prompt_eval_count": 12_345, "num_ctx": 262_144},
+        )
         self.assertEqual({row["notebookId"] for row in completed.result["citations"]}, {alpha.notebook_id})
         self.assertEqual({row["notebook_id"] for row in self.backend.last_hits}, {alpha.notebook_id})
 
