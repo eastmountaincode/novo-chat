@@ -237,6 +237,7 @@ class DeploymentTemplateTests(unittest.TestCase):
     def test_staging_caddy_mux_is_loopback_only_and_preserves_one_origin(self) -> None:
         caddy = read("gateway-host/Caddyfile-staging-mux.template")
         self.assertIn("http://127.0.0.1:3182", caddy)
+        self.assertIn("bind 127.0.0.1", caddy)
         self.assertNotIn("0.0.0.0", caddy)
         self.assertIn("admin off", caddy)
         self.assertRegex(caddy, r"path /api/integrations/v1 /api/integrations/v1/\*")

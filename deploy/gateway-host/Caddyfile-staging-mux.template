@@ -7,6 +7,8 @@
 # Novo and Novo Chat through the same origin, so the Novo session cookie and
 # same-origin CSRF checks continue to work without publishing a staging route.
 http://127.0.0.1:3182 {
+    bind 127.0.0.1
+
     @privateIntegration path /api/integrations/v1 /api/integrations/v1/*
     handle @privateIntegration {
         header Cache-Control "private, no-store"
