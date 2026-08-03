@@ -252,7 +252,15 @@ def test_embedding_generation_and_readiness_use_only_the_fake_session() -> None:
         gets=[FakeResponse(status_code=503), FakeResponse(status_code=200)],
     )
     configuration = valid_config()
-    configuration["models"]["model:a"]["maxModelLen"] = 262_144
+    configuration["models"]["model:a"].update(
+        {
+            "maxTokens": 32_768,
+            "maxModelLen": 262_144,
+            "temperature": 1.0,
+            "topP": 0.95,
+            "topK": 20,
+        }
+    )
     backend = HttpModelBackend(ModelBackendDocument.model_validate(configuration), session=session)
     scope = NotebookScope(
         notebook_id="notebook-a",
@@ -304,8 +312,10 @@ def test_embedding_generation_and_readiness_use_only_the_fake_session() -> None:
     assert generation["url"] == "http://localhost:8000/v1/chat/completions"
     assert generation["timeout"] == 30
     assert generation["json"]["model"] == "served-model"
-    assert generation["json"]["max_tokens"] == 512
-    assert generation["json"]["temperature"] == 0.2
+    assert generation["json"]["max_tokens"] == 32_768
+    assert generation["json"]["temperature"] == 1.0
+    assert generation["json"]["top_p"] == 0.95
+    assert generation["json"]["top_k"] == 20
     assert generation["json"]["stream"] is False
     assert generation["json"]["chat_template_kwargs"] == {"enable_thinking": False}
     assert generation["json"]["messages"][1] == {"role": "user", "content": "What happened?"}

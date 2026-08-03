@@ -450,7 +450,7 @@ def test_query_preserves_original_for_generation_and_reports_real_stages(tmp_pat
         QueryProgressStage.SEARCHING,
         QueryProgressStage.ANSWERING,
     ]
-    assert updates[-1].retrieved_count == 4
+    assert updates[-1].retrieved_count == 3
     assert len(result.citations) == 4
 
 

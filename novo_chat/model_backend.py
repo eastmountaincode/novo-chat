@@ -191,7 +191,16 @@ class GenerationBackendConfig(_StrictModel):
         max_length=128,
         strict=True,
     )
-    max_tokens: int = Field(default=2048, alias="maxTokens", ge=1, le=8192)
+    max_tokens: int = Field(default=2048, alias="maxTokens", ge=1, le=65_536)
+    temperature: float = Field(default=0.2, ge=0, le=2, allow_inf_nan=False)
+    top_p: float | None = Field(
+        default=None,
+        alias="topP",
+        gt=0,
+        le=1,
+        allow_inf_nan=False,
+    )
+    top_k: int | None = Field(default=None, alias="topK", ge=-1, le=1000, strict=True)
     max_model_len: int | None = Field(
         default=None,
         alias="maxModelLen",
@@ -450,9 +459,13 @@ class HttpModelBackend:
             "model": backend.served_model,
             "messages": generation_messages(question, hits, max_sources=max_sources),
             "max_tokens": backend.max_tokens,
-            "temperature": 0.2,
+            "temperature": backend.temperature,
             "stream": False,
         }
+        if backend.top_p is not None:
+            payload["top_p"] = backend.top_p
+        if backend.top_k is not None:
+            payload["top_k"] = backend.top_k
         if backend.chat_template_kwargs:
             payload["chat_template_kwargs"] = backend.chat_template_kwargs
         try:
