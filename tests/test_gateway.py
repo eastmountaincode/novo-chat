@@ -667,6 +667,8 @@ def test_gateway_ui_preserves_aorus_layout_and_ranked_retrieval_contract() -> No
 
     assert "<span>Corpus</span>" in html
     assert "<span>Context chunks</span>" in html
+    assert 'id="maxSources" type="range" min="1" max="16" value="12"' in html
+    assert '<output id="maxSourcesValue" class="mono slider-value">12</output>' in html
     assert "<h2>Retrieved</h2>" in html
     assert 'placeholder="Ask a question..."' in html
     assert "Access checked live by Novo" not in html
@@ -687,6 +689,9 @@ def test_gateway_ui_preserves_aorus_layout_and_ranked_retrieval_contract() -> No
     assert "user?.role" not in javascript
     assert "accessSource" not in javascript
     assert "retrieval_top_k: state.retrievalTopK" in javascript
+    assert "maxSources: 12," in javascript
+    assert "maxSourcesMax: 16," in javascript
+    assert "retrievalTopK: 16," in javascript
     assert "usedInContext" in javascript
     assert "source-ranked-only" in javascript
     assert "timings?.prompt_eval_count" in javascript

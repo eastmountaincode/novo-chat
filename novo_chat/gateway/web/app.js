@@ -19,7 +19,7 @@ const state = {
   runtimeAction: null,
   runtimeModel: "",
   runtimeProgress: null,
-  maxSources: 16,
+  maxSources: 12,
   maxSourcesMax: 16,
   retrievalTopK: 16,
   questionHistory: [],
