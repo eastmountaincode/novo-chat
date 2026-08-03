@@ -427,7 +427,7 @@ class ModelDisplayDetails(ProtocolModel):
     """Optional, display-only metadata for one approved generation model."""
 
     model_size: str | None = Field(default=None, min_length=1, max_length=128, strict=True)
-    max_tokens: int = Field(ge=1, le=8192, strict=True)
+    max_tokens: int = Field(ge=1, le=65_536, strict=True)
     max_model_len: int | None = Field(default=None, ge=1, le=2_000_000, strict=True)
     thinking: str | None = Field(default=None, min_length=1, max_length=128, strict=True)
     total_vram_gb: float | None = Field(
