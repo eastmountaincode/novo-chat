@@ -678,6 +678,117 @@ def test_generation_without_usage_remains_backward_compatible() -> None:
     assert result.timings is None
 
 
+def test_generation_backs_off_output_tokens_for_validated_context_overflow() -> None:
+    session = FakeSession(
+        posts=[
+            FakeResponse(
+                {
+                    "error": {
+                        "message": (
+                            "This model's maximum context length is 16384 tokens. "
+                            "However, you requested 2048 output tokens and your prompt "
+                            "contains at least 14337 input tokens, for a total of at least "
+                            "16385 tokens. Please reduce the length of the input prompt."
+                        ),
+                        "type": "BadRequestError",
+                        "param": "input_tokens",
+                        "code": 400,
+                    }
+                },
+                status_code=400,
+            ),
+            FakeResponse(
+                {
+                    "choices": [{"message": {"content": "Grounded answer [1]"}}],
+                    "usage": {"prompt_tokens": 14_337},
+                }
+            ),
+        ]
+    )
+    configuration = valid_config()
+    configuration["models"]["model:a"]["maxTokens"] = 2048
+    configuration["models"]["model:a"]["maxModelLen"] = 16_384
+    backend = HttpModelBackend(ModelBackendDocument.model_validate(configuration), session=session)
+
+    result = backend.generate(
+        "Question",
+        [{"source_idx": 1, "text": "source"}],
+        model="model:a",
+        max_sources=1,
+    )
+
+    assert result.answer == "Grounded answer [1]"
+    assert [call["json"]["max_tokens"] for call in session.post_calls] == [2048, 1024]
+    assert result.timings is not None
+    assert result.timings.prompt_eval_count == 14_337
+
+
+def test_generation_rejects_unvalidated_or_unusable_context_budget() -> None:
+    mismatched = FakeSession(
+        posts=[
+            FakeResponse(
+                {
+                    "error": {
+                        "message": (
+                            "This model's maximum context length is 2048 tokens. "
+                            "However, you requested 512 output tokens and your prompt "
+                            "contains at least 1537 input tokens, for a total of at least "
+                            "2049 tokens."
+                        )
+                    }
+                },
+                status_code=400,
+            )
+        ]
+    )
+    configuration = valid_config()
+    configuration["models"]["model:a"]["maxModelLen"] = 1024
+    backend = HttpModelBackend(ModelBackendDocument.model_validate(configuration), session=mismatched)
+
+    with pytest.raises(ComputeError) as unavailable:
+        backend.generate(
+            "Question",
+            [{"source_idx": 1, "text": "source"}],
+            model="model:a",
+            max_sources=1,
+        )
+
+    assert unavailable.value.code == "GENERATION_UNAVAILABLE"
+    assert len(mismatched.post_calls) == 1
+
+    unusable = FakeSession(
+        posts=[
+            FakeResponse(
+                {
+                    "error": {
+                        "message": (
+                            "This model's maximum context length is 1024 tokens. "
+                            f"However, you requested {output_tokens} output tokens and your "
+                            f"prompt contains at least {1025 - output_tokens} input tokens, "
+                            "for a total of at least 1025 tokens."
+                        )
+                    }
+                },
+                status_code=400,
+            )
+            for output_tokens in (512, 256, 128, 64)
+        ]
+    )
+    backend = HttpModelBackend(ModelBackendDocument.model_validate(configuration), session=unusable)
+
+    with pytest.raises(ComputeError) as exceeded:
+        backend.generate(
+            "Question",
+            [{"source_idx": 1, "text": "source"}],
+            model="model:a",
+            max_sources=1,
+        )
+
+    assert exceeded.value.code == "CONTEXT_LENGTH_EXCEEDED"
+    assert exceeded.value.retryable is False
+    assert [call["json"]["max_tokens"] for call in unusable.post_calls] == [512, 256, 128, 64]
+
+
 @pytest.mark.parametrize(
     "usage",
     [
