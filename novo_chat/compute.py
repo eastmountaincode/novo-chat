@@ -473,7 +473,7 @@ class IndexRepository:
                 JobProgressDetail(
                     stage=QueryProgressStage.ANSWERING,
                     retrieval_plan=plan,
-                    retrieved_count=len(ranked_hits),
+                    retrieved_count=len(prompt_hits),
                 )
             )
         generation = self._generation_result(

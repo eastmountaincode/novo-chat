@@ -431,7 +431,7 @@ function queryStageLabel(status) {
     const rawCount = detail?.retrievedCount ?? detail?.retrieved_count;
     const count = Number(rawCount);
     return Number.isFinite(count)
-      ? `Retrieved ${count} chunk${count === 1 ? "" : "s"}; answering from the selected context…`
+      ? `Answering from ${count} selected context chunk${count === 1 ? "" : "s"}…`
       : "Answering from retrieved notes…";
   }
   const stateName = String(status?.state || status?.job?.state || "").toLowerCase();

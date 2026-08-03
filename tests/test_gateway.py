@@ -689,6 +689,7 @@ def test_gateway_ui_preserves_aorus_layout_and_ranked_retrieval_contract() -> No
     assert "user?.role" not in javascript
     assert "accessSource" not in javascript
     assert "retrieval_top_k: state.retrievalTopK" in javascript
+    assert "Answering from ${count} selected context chunk" in javascript
     assert "maxSources: 12," in javascript
     assert "maxSourcesMax: 16," in javascript
     assert "retrievalTopK: 16," in javascript
@@ -715,7 +716,7 @@ def test_gateway_ui_preserves_aorus_layout_and_ranked_retrieval_contract() -> No
     assert '["total VRAM", totalVramGb != null && Number.isFinite(Number(totalVramGb))' in javascript
     assert '"Planning search…"' in javascript
     assert '"Searching indexed notes…"' in javascript
-    assert "answering from the selected context" in javascript
+    assert "selected context chunk" in javascript
     assert "renderSearchDetails(plan, { open: true })" in javascript
     assert "Semantic expansion" in javascript
     assert "BM25 expansion" in javascript
