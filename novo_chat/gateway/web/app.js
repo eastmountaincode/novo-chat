@@ -268,11 +268,12 @@ function renderIndexPanel() {
     <div class="specs-rows">
       ${specRow("status", statusText)}
       ${activated.length ? specRow(aggregate ? "latest rebuild" : "last rebuilt", formatBuiltAt(activated[activated.length - 1])) : ""}
-      ${corpus.updated_at ? specRow("Novo updated", formatBuiltAt(corpus.updated_at)) : ""}
+      ${corpus.updated_at ? specRow("Notebook updated", formatBuiltAt(corpus.updated_at)) : ""}
       ${specRow("chunks", knownChunks.length ? formatInt(chunkCount) : "-")}
     </div>
     ${rebuildingSelected ? renderProgress("Rebuilding index", state.indexProgress) : ""}
   `;
+  applyProgressWidths(el.indexPanel);
   el.indexBtn.classList.remove("hidden-ui");
   el.indexBtn.innerHTML = `${refreshIcon()}<span>${rebuildingSelected ? "Rebuilding..." : "Rebuild index"}</span>`;
 }
@@ -317,6 +318,7 @@ function renderRuntime() {
     </div>
     ${visibleRuntimeAction ? renderProgress(visibleRuntimeAction === "start" ? "Starting model" : "Stopping model", state.runtimeProgress) : ""}
   `;
+  applyProgressWidths(el.runtime);
   document.getElementById("startModelBtn")?.addEventListener("click", () => void controlRuntime("start"));
   document.getElementById("stopModelBtn")?.addEventListener("click", () => void controlRuntime("stop"));
 }
@@ -353,9 +355,17 @@ function renderProgress(label, progress) {
   return `
     <div class="progress-block">
       <div class="progress-line"><span>${escapeHtml(progress?.message || label)}</span><span class="mono">${percent.toFixed(0)}%</span></div>
-      <progress class="progress-native" max="100" value="${percent.toFixed(0)}">${percent.toFixed(0)}%</progress>
+      <div class="progress-bar" role="progressbar" aria-label="${escapeHtml(label)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent.toFixed(0)}">
+        <div data-progress-fill="${percent.toFixed(0)}"></div>
+      </div>
     </div>
   `;
+}
+
+function applyProgressWidths(root) {
+  root.querySelectorAll("[data-progress-fill]").forEach((fill) => {
+    fill.style.width = `${fill.dataset.progressFill}%`;
+  });
 }
 
 function progressPercent(progress) {
