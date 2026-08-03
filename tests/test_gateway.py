@@ -670,6 +670,10 @@ def test_gateway_ui_preserves_aorus_layout_and_ranked_retrieval_contract() -> No
     assert "timings?.prompt_eval_count" in javascript
     assert "timings?.num_ctx" in javascript
     assert 'class="meter" role="progressbar"' in javascript
+    assert 'class="progress-bar" role="progressbar"' in javascript
+    assert 'data-progress-fill="${percent.toFixed(0)}"' in javascript
+    assert 'fill.style.width = `${fill.dataset.progressFill}%`' in javascript
+    assert 'specRow("Notebook updated", formatBuiltAt(corpus.updated_at))' in javascript
     assert 'querySelector(".meter > div").style.width' in javascript
     assert 'specRow("status", statusText)' in javascript
     assert '`${needsRebuild} of ${rows.length} need rebuild`' in javascript
