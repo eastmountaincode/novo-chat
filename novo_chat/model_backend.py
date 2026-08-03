@@ -23,10 +23,58 @@ from .protocol import (
     RetrievalPlan,
     RetrievalPlanMode,
 )
-from .rag_core import fallback_retrieval_plan, generation_messages
+from .rag_core import (
+    fallback_retrieval_plan,
+    generation_messages,
+    retrieval_plan_adds_signal,
+    sanitize_bm25_expansion_terms,
+)
 
 
 _MODEL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_PLANNER_SYSTEM_PROMPT = (
+    "Expand a user's Novo notebook question into retrieval inputs. This is query "
+    "expansion, not question restatement. Return exactly one JSON object with keys "
+    "semantic_query and bm25_terms. semantic_query must preserve every proper name, "
+    "acronym, number, and exact technical term from the current question while adding "
+    "two to six close paraphrases of the requested state, action, or relationship in "
+    "likely answer-bearing notebook language. bm25_terms must contain four to twelve "
+    "short lexical alternatives that add useful search words absent from the current "
+    "question; do not repeat question words merely to preserve them. A capitalization-"
+    "only rewrite or a list copied from the question is invalid. For example, expand "
+    "'What is Mina confused about?' toward 'Mina confusion uncertainty lack of "
+    "understanding unsure unclear not sure no clue stuck trouble difficulty' with BM25 "
+    "terms such as ['confusion','uncertainty','unclear','unsure','not sure','no clue',"
+    "'stuck','trouble','difficulty']. Use recent questions only to resolve references "
+    "such as 'that' or 'what about Kevin'. Do not answer the question, explain your "
+    "work, cite sources, hypothesize answers, or invent people, projects, experiments, "
+    "dates, facts, or conclusions. Do not add any keys."
+)
+_PLANNER_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "novo_retrieval_plan",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "semantic_query": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4_000,
+                },
+                "bm25_terms": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1, "maxLength": 128},
+                    "minItems": 4,
+                    "maxItems": 12,
+                },
+            },
+            "required": ["semantic_query", "bm25_terms"],
+            "additionalProperties": False,
+        },
+    },
+}
 
 
 def _loopback_origin(value: str) -> str:
@@ -70,7 +118,7 @@ class _VllmUsage(BaseModel):
 
 class _PlannerResponse(_StrictModel):
     semantic_query: str = Field(min_length=1, max_length=4_000)
-    bm25_terms: tuple[str, ...] = Field(default_factory=tuple, max_length=32)
+    bm25_terms: tuple[str, ...] = Field(min_length=4, max_length=12)
 
 
 class EmbeddingBackendConfig(_StrictModel):
@@ -262,58 +310,76 @@ class HttpModelBackend:
         contextual_question = str(retrieval_question or question).strip()
         if len(contextual_question) > 12_000:
             contextual_question = contextual_question[-12_000:].lstrip()
-        planner_input = json.dumps(
-            {
-                "current_question": question,
-                "recent_questions_and_current_question": contextual_question,
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-        payload: dict[str, Any] = {
-            "model": backend.served_model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "Convert a user's Novo notebook question into retrieval inputs. "
-                        "Return exactly one JSON object with keys semantic_query and bm25_terms. "
-                        "semantic_query must be a concise standalone search query. bm25_terms "
-                        "must be an array of no more than 32 short exact names, acronyms, numbers, "
-                        "technical terms, and useful synonyms. Preserve every proper name, acronym, "
-                        "number, and exact technical term from the current question. Use recent "
-                        "questions only to resolve references such as 'that' or 'what about Kevin'. "
-                        "Do not answer the question, explain your work, cite sources, invent facts, "
-                        "or add any keys."
-                    ),
-                },
-                {"role": "user", "content": planner_input},
-            ],
-            "max_tokens": 256,
-            "temperature": 0,
-            "stream": False,
+        planner_document: dict[str, Any] = {
+            "current_question": question,
+            "recent_questions_and_current_question": contextual_question,
         }
-        if backend.chat_template_kwargs:
-            payload["chat_template_kwargs"] = backend.chat_template_kwargs
-        try:
+
+        def request_plan(document: Mapping[str, Any]) -> _PlannerResponse:
+            payload: dict[str, Any] = {
+                "model": backend.served_model,
+                "messages": [
+                    {"role": "system", "content": _PLANNER_SYSTEM_PROMPT},
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            document,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ),
+                    },
+                ],
+                "max_tokens": 256,
+                "temperature": 0,
+                "stream": False,
+                "response_format": _PLANNER_RESPONSE_FORMAT,
+            }
+            if backend.chat_template_kwargs:
+                payload["chat_template_kwargs"] = backend.chat_template_kwargs
             response = self._session.post(
                 f"{backend.base_url}/v1/chat/completions",
                 json=payload,
-                timeout=min(120.0, backend.timeout_seconds),
+                timeout=min(30.0, backend.timeout_seconds),
             )
             response.raise_for_status()
-            document = response.json()
-            if not isinstance(document, Mapping):
+            response_document = response.json()
+            if not isinstance(response_document, Mapping):
                 raise ValueError("planner response must be an object")
-            choice = (document.get("choices") or [{}])[0]
+            choice = (response_document.get("choices") or [{}])[0]
             content = str((choice.get("message") or {}).get("content") or "").strip()
             if content.startswith("```") and content.endswith("```"):
                 content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.IGNORECASE)
-            planned = _PlannerResponse.model_validate(json.loads(content))
+            return _PlannerResponse.model_validate(json.loads(content))
+
+        try:
+            planned = request_plan(planner_document)
+            bm25_terms = sanitize_bm25_expansion_terms(question, planned.bm25_terms)
+            useful = len(bm25_terms) >= 4 and retrieval_plan_adds_signal(
+                question, planned.semantic_query, bm25_terms
+            )
+            if not useful:
+                planned = request_plan(
+                    {
+                        **planner_document,
+                        "rejected_plan": planned.model_dump(mode="json"),
+                        "correction": (
+                            "The previous plan merely copied or restated the current question. "
+                            "Replace it with answer-neutral notebook-language expansion that adds "
+                            "at least two meaningful semantic tokens and four distinct BM25 "
+                            "expansion terms absent from the question."
+                        ),
+                    }
+                )
+                bm25_terms = sanitize_bm25_expansion_terms(question, planned.bm25_terms)
+                useful = len(bm25_terms) >= 4 and retrieval_plan_adds_signal(
+                    question, planned.semantic_query, bm25_terms
+                )
+            if not useful:
+                return fallback
             return RetrievalPlan(
                 original_question=question,
                 semantic_query=planned.semantic_query,
-                bm25_terms=planned.bm25_terms,
+                bm25_terms=bm25_terms,
                 mode=RetrievalPlanMode.PLANNED,
             )
         except (requests.RequestException, AttributeError, IndexError, TypeError, ValueError):

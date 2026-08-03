@@ -39,6 +39,8 @@ from .protocol import (
 
 _ARTIFACT_ID = re.compile(r"^[0-9a-f]{64}$")
 _CANDIDATE_DIRECTORY = re.compile(r"^[0-9a-f]{64}\.[A-Za-z0-9_-]+$")
+_SEMANTIC_EXPANSION_RRF_WEIGHT = 0.85
+_LEXICAL_EXPANSION_RRF_WEIGHT = 0.9
 DEFAULT_STORAGE_QUOTA_BYTES = 50 * 1024 * 1024 * 1024
 
 
@@ -576,26 +578,30 @@ class IndexRepository:
         strategy: QueryStrategy,
         count: int,
     ) -> list[dict[str, Any]]:
-        from .rag_core import diversify_by_page, tokenize
+        from .rag_core import diversify_by_page, meaningful_search_tokens, tokenize
 
         pool = min(240, len(chunks))
-        fused: dict[int, float] = {}
+        original_fused: dict[int, float] = {}
+        semantic_expansion: dict[int, float] = {}
+        lexical_expansion: dict[int, float] = {}
         dense_scores = np.zeros(len(chunks), dtype=np.float32)
         lexical_scores = np.zeros(len(chunks), dtype=np.float32)
 
         if strategy in {QueryStrategy.HYBRID, QueryStrategy.SEMANTIC}:
-            dense_queries: list[str] = []
+            dense_queries: list[tuple[str, bool]] = []
             seen_queries: set[str] = set()
-            for candidate in (question, plan.semantic_query):
+            for candidate, is_expansion in (
+                (question, False),
+                (plan.semantic_query, True),
+            ):
                 normalized = candidate.strip()
-                key = normalized.casefold()
+                key = " ".join(tokenize(normalized)) or normalized.casefold()
                 if not normalized or key in seen_queries:
                     continue
                 seen_queries.add(key)
-                dense_queries.append(normalized)
-            dense_rank_weight = 1.0 / max(1, len(dense_queries))
+                dense_queries.append((normalized, is_expansion))
             dense_score_sets: list[np.ndarray] = []
-            for dense_query in dense_queries:
+            for dense_query, is_expansion in dense_queries:
                 query_vector = np.asarray(
                     self.backend.embed_query(dense_query),
                     dtype=np.float32,
@@ -610,32 +616,98 @@ class IndexRepository:
                 scores = vectors @ query_vector
                 dense_score_sets.append(scores)
                 dense_top = np.lexsort((np.arange(len(scores)), -scores))[:pool]
+                target = semantic_expansion if is_expansion else original_fused
+                weight = _SEMANTIC_EXPANSION_RRF_WEIGHT if is_expansion else 1.0
                 for rank, index in enumerate(dense_top):
-                    fused[int(index)] = (
-                        fused.get(int(index), 0.0)
-                        + dense_rank_weight / (60 + rank)
-                    )
+                    index = int(index)
+                    target[index] = target.get(index, 0.0) + weight / (60 + rank)
             if dense_score_sets:
                 dense_scores = np.max(np.vstack(dense_score_sets), axis=0)
 
         if strategy in {QueryStrategy.HYBRID, QueryStrategy.LEXICAL}:
-            bm25 = BM25Okapi([tokenize(str(chunk.get("indexed_text") or "")) for chunk in chunks])
-            lexical_tokens: list[str] = []
-            seen_tokens: set[str] = set()
-            for text in (question, *plan.bm25_terms):
-                for token in tokenize(text):
-                    if token in seen_tokens:
+            tokenized_chunks = [
+                tokenize(str(chunk.get("indexed_text") or "")) for chunk in chunks
+            ]
+            bm25 = BM25Okapi(tokenized_chunks)
+            original_tokens: list[str] = []
+            seen_original_tokens: set[str] = set()
+            for token in meaningful_search_tokens(question) or tokenize(question):
+                if token in seen_original_tokens:
+                    continue
+                seen_original_tokens.add(token)
+                original_tokens.append(token)
+            expansion_tokens: list[str] = []
+            seen_expansion_tokens: set[str] = set()
+            for term in plan.bm25_terms:
+                for token in meaningful_search_tokens(term):
+                    if token in seen_original_tokens or token in seen_expansion_tokens:
                         continue
-                    seen_tokens.add(token)
-                    lexical_tokens.append(token)
-            lexical_scores = np.asarray(bm25.get_scores(lexical_tokens), dtype=np.float32)
-            lexical_top = np.lexsort((np.arange(len(lexical_scores)), -lexical_scores))[:pool]
-            for rank, index in enumerate(lexical_top):
-                fused[int(index)] = fused.get(int(index), 0.0) + 1.0 / (60 + rank)
-            lexical_max = float(np.max(lexical_scores)) if len(lexical_scores) else 0.0
-            if strategy is QueryStrategy.HYBRID and lexical_max > 0:
-                for index in fused:
-                    fused[index] += 0.008 * max(0.0, float(lexical_scores[index])) / lexical_max
+                    seen_expansion_tokens.add(token)
+                    expansion_tokens.append(token)
+
+            lexical_score_sets: list[np.ndarray] = []
+            for lexical_tokens, lexical_weight, target, is_expansion in (
+                (original_tokens, 1.0, original_fused, False),
+                (
+                    expansion_tokens,
+                    _LEXICAL_EXPANSION_RRF_WEIGHT,
+                    lexical_expansion,
+                    True,
+                ),
+            ):
+                if not lexical_tokens:
+                    continue
+                scores = np.asarray(bm25.get_scores(lexical_tokens), dtype=np.float32)
+                lexical_score_sets.append(lexical_weight * scores)
+                lexical_token_set = set(lexical_tokens)
+                overlap_counts = np.asarray(
+                    [
+                        len(lexical_token_set.intersection(chunk_tokens))
+                        for chunk_tokens in tokenized_chunks
+                    ],
+                    dtype=np.float32,
+                )
+                matched_indices = np.flatnonzero(overlap_counts > 0)
+                if not len(matched_indices):
+                    continue
+                lexical_max = float(np.max(scores[matched_indices]))
+                ranking_scores = (
+                    scores[matched_indices]
+                    if lexical_max > 0
+                    else overlap_counts[matched_indices]
+                )
+                lexical_order = np.lexsort((matched_indices, -ranking_scores))[:pool]
+                lexical_top = matched_indices[lexical_order]
+                for rank, index in enumerate(lexical_top):
+                    index = int(index)
+                    target[index] = target.get(index, 0.0) + lexical_weight / (60 + rank)
+                if strategy is QueryStrategy.HYBRID and not is_expansion:
+                    normalized_bonus = (
+                        0.008 * np.maximum(scores, 0.0) / lexical_max
+                        if lexical_max > 0
+                        else 0.008 * overlap_counts / float(np.max(overlap_counts))
+                    )
+                    for index in np.flatnonzero(normalized_bonus > 0):
+                        item = int(index)
+                        target[item] = target.get(item, 0.0) + float(
+                            normalized_bonus[item]
+                        )
+            if lexical_score_sets:
+                lexical_scores = np.maximum(
+                    np.max(np.vstack(lexical_score_sets), axis=0),
+                    0.0,
+                )
+
+        fused = dict(original_fused)
+        for index in semantic_expansion.keys() | lexical_expansion.keys():
+            # Dense and lexical expansions are two views of the same untrusted
+            # planner hypothesis, so they may not reinforce one another. Either
+            # can fill a retrieval gap without reducing original-query evidence.
+            expansion_score = max(
+                semantic_expansion.get(index, 0.0),
+                lexical_expansion.get(index, 0.0),
+            )
+            fused[index] = max(fused.get(index, 0.0), expansion_score)
 
         ranked = sorted(fused.items(), key=lambda item: (-item[1], item[0]))
         selected = diversify_by_page(ranked, list(chunks), min(int(count), len(chunks)), max_per_page=2)
