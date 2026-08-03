@@ -278,7 +278,7 @@ class ProtocolModelTests(unittest.TestCase):
                 "modelDetails": {
                     "model:a": {
                         "modelSize": "122B",
-                        "maxTokens": 2048,
+                        "maxTokens": 32_768,
                         "maxModelLen": 262_144,
                         "thinking": "enabled",
                         "totalVramGb": 192,
@@ -290,7 +290,7 @@ class ProtocolModelTests(unittest.TestCase):
             current.model_dump(mode="json", by_alias=True)["modelDetails"]["model:a"],
             {
                 "modelSize": "122B",
-                "maxTokens": 2048,
+                "maxTokens": 32_768,
                 "maxModelLen": 262_144,
                 "thinking": "enabled",
                 "totalVramGb": 192.0,
