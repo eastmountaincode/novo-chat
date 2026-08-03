@@ -78,6 +78,63 @@ class DurableJobStoreTests(unittest.TestCase):
             )
         )
 
+    def test_typed_query_progress_detail_is_durable_and_survives_completion(self):
+        outcome = self.store.submit(
+            environment="staging",
+            actor_user_id="user-a",
+            idempotency_key="query-progress-key",
+            request_id=REQUEST_ID,
+            operation=JobOperation.QUERY,
+            scope=self.scope,
+            payload={"question": "What happened?", "model": "model:a"},
+            now=1_700_000_000,
+        )
+        detail = {
+            "stage": "searching",
+            "retrievalPlan": {
+                "originalQuestion": "What happened?",
+                "semanticQuery": "experiment outcome result",
+                "bm25Terms": ["experiment", "outcome"],
+                "mode": "planned",
+            },
+        }
+        self.store.set_running(outcome.job.operation_id, now=1_700_000_001)
+        self.store.set_progress(
+            outcome.job.operation_id,
+            0.30,
+            progress_detail=detail,
+            now=1_700_000_002,
+        )
+
+        reopened = JobStore(f"{self.temporary_directory.name}/worker.sqlite3")
+        running = reopened.get(outcome.job.job_id, environment="staging")
+        self.assertEqual(running.progress, 0.30)
+        self.assertEqual(running.progress_detail, detail)
+
+        reopened.succeed(
+            outcome.job.operation_id,
+            {"kind": "query", "answer": "Answer", "model": "model:a", "citations": []},
+            now=1_700_000_003,
+        )
+        completed = reopened.get(outcome.job.job_id, environment="staging")
+        self.assertEqual(completed.state, JobState.SUCCEEDED)
+        self.assertEqual(completed.progress_detail, detail)
+
+    def test_existing_job_database_adds_progress_detail_column(self):
+        database_path = f"{self.temporary_directory.name}/worker.sqlite3"
+        with sqlite3.connect(database_path) as connection:
+            connection.execute("ALTER TABLE operations DROP COLUMN progress_detail_json")
+            self.assertNotIn(
+                "progress_detail_json",
+                {str(row[1]) for row in connection.execute("PRAGMA table_info(operations)")},
+            )
+
+        JobStore(database_path)
+
+        with sqlite3.connect(database_path) as connection:
+            columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(operations)")}
+        self.assertIn("progress_detail_json", columns)
+
     def test_query_running_during_restart_becomes_retryable_failure(self):
         outcome = self.store.submit(
             environment="staging",

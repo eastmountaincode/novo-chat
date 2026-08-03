@@ -15,10 +15,12 @@ from .model_controller import ModelController, ModelControllerError, ModelReadin
 from .protocol import (
     IndexJobResult,
     IngestJobResult,
+    JobProgressDetail,
     JobOperation,
     ModelJobResult,
     ModelRuntimeState,
     PageDocument,
+    QueryProgressStage,
     QueryStrategy,
 )
 
@@ -251,6 +253,27 @@ class WorkerExecutor:
         model = str(operation.payload["model"])
         if not self.model_readiness_probe.is_ready(model):
             raise ComputeError("MODEL_NOT_READY", "Requested model is not ready.", retryable=True)
+        self.job_store.set_progress(
+            operation.operation_id,
+            0.05,
+            progress_detail=JobProgressDetail(
+                stage=QueryProgressStage.PLANNING
+            ).model_dump(mode="json", by_alias=True),
+            now=self.clock(),
+        )
+
+        def report_progress(detail: JobProgressDetail) -> None:
+            progress = {
+                QueryProgressStage.SEARCHING: 0.30,
+                QueryProgressStage.ANSWERING: 0.65,
+            }.get(detail.stage, 0.05)
+            self.job_store.set_progress(
+                operation.operation_id,
+                progress,
+                progress_detail=detail.model_dump(mode="json", by_alias=True),
+                now=self.clock(),
+            )
+
         result = self.index_repository.query(
             artifacts,
             question=str(operation.payload["question"]),
@@ -259,6 +282,7 @@ class WorkerExecutor:
             strategy=strategy,
             max_sources=int(operation.payload.get("maxSources", 16)),
             retrieval_top_k=int(operation.payload.get("retrievalTopK", 16)),
+            progress_callback=report_progress,
         )
         return result.model_dump(mode="json", by_alias=True)
 

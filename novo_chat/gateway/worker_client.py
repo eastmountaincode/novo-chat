@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any, Protocol
 
+from novo_chat.protocol import JobProgressDetail
+
 
 _SAFE_ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 
@@ -120,6 +122,14 @@ def public_job_status(payload: dict[str, Any]) -> dict[str, Any]:
             "message": str(error)[:2000],
             "retryable": False,
         }
+    progress_detail = None
+    if job.get("progressDetail") is not None:
+        try:
+            progress_detail = JobProgressDetail.model_validate(
+                job["progressDetail"]
+            ).model_dump(mode="json", by_alias=True)
+        except (TypeError, ValueError) as exc:
+            raise WorkerRejected("Worker returned invalid progress detail") from exc
     return {
         "jobId": str(job.get("jobId") or job.get("id") or ""),
         "state": str(job.get("state") or "unknown"),
@@ -128,6 +138,7 @@ def public_job_status(payload: dict[str, Any]) -> dict[str, Any]:
         "error": error or None,
         "createdAt": job.get("createdAt"),
         "updatedAt": job.get("updatedAt"),
+        "progressDetail": progress_detail,
     }
 
 

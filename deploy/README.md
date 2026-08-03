@@ -355,6 +355,20 @@ recovery and a clear degraded state. Check that cookies, integration tokens,
 HMAC keys, normalized page bodies, and model output are absent from ordinary
 logs.
 
+### Rolling application-image upgrades
+
+The first-installation startup order below does not apply to an in-place image
+upgrade. New response fields are additive and optional for the new gateway, but
+an older gateway can reject fields emitted by a newer worker. For an in-place
+application-image upgrade, restart the gateway with the new image before the
+worker. Verify gateway health against the existing worker, then install and
+restart the worker with the exact same image digest and repeat query acceptance.
+
+For an application-image rollback, roll back the worker before the gateway.
+The current gateway accepts the older worker response shape; after worker
+rollback is verified, restore the older gateway. Change or restart the tunnel
+and controller only when their own configuration changed.
+
 ## 9. Promote the exact image to production
 
 Production is a second installation, not a rename of staging:
@@ -364,7 +378,8 @@ Production is a second installation, not a rename of staging:
 2. Use the exact image digest accepted in staging.
 3. Confirm compute port `8095` is free. Preserve and stop the legacy prototype
    only after an approved cutover window.
-4. Bring up controller socket, worker, tunnel, and gateway in that order.
+4. For the first installation, bring up controller socket, worker, tunnel, and
+   gateway in that order. Use the gateway-first sequence above for later upgrades.
 5. Install the production Apache `/chat/` directives, test the complete vhost,
    and gracefully reload.
 6. Repeat the acceptance checks on ports `3180`, `8195`, and `8095`, including a
@@ -388,9 +403,9 @@ Prepare rollback before the staging change and again before production:
 4. Retain state directories, logs, rendered configuration, and old key material
    under access-controlled rollback names until the review window closes. Do
    not delete or overwrite them during rollback.
-5. For an application-version rollback, render the units with the previously
-   recorded immutable digest, run configuration checks, and restart in the same
-   controller -> worker -> tunnel -> gateway order.
+5. For an application-image rollback, render the units with the previously
+   recorded immutable digest, run configuration checks, and use the worker-first
+   then gateway sequence described above.
 6. Revoke the new SSH public keys and protocol/integration tokens only after the
    rollback target is confirmed not to use them.
 7. Verify that ports `3180/3181`, `8195/8196`, and `8095/8096` match the intended

@@ -3,7 +3,9 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from novo_chat.protocol import JobProgressDetail, validate_query_text
 
 
 class GatewayOperation(str, Enum):
@@ -31,6 +33,13 @@ class GatewayJobRequest(BaseModel):
     max_sources: int = Field(default=6, ge=1, le=100)
     retrieval_top_k: int = Field(default=16, ge=1, le=32)
     force: bool = False
+
+    @field_validator("question", "retrieval_question")
+    @classmethod
+    def validate_question_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return validate_query_text(value)
 
     @model_validator(mode="after")
     def required_fields_for_operation(self) -> "GatewayJobRequest":
@@ -91,3 +100,4 @@ class JobPublicStatus(BaseModel):
     error: JobPublicError | None = None
     createdAt: str | None = None
     updatedAt: str | None = None
+    progressDetail: JobProgressDetail | None = None

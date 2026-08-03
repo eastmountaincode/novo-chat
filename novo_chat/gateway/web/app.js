@@ -376,6 +376,69 @@ function progressPercent(progress) {
   return Math.max(0, Math.min(100, numeric >= 0 && numeric <= 1 ? numeric * 100 : numeric));
 }
 
+function renderSearchDetails(plan, { open = false } = {}) {
+  if (!plan || typeof plan !== "object") return "";
+  const original = String(plan.originalQuestion || plan.original_question || "");
+  const semantic = String(plan.semanticQuery || plan.semantic_query || "");
+  const rawTerms = plan.bm25Terms || plan.bm25_terms || [];
+  const terms = Array.isArray(rawTerms) ? rawTerms.map(String).filter(Boolean).slice(0, 32) : [];
+  if (!original && !semantic && !terms.length) return "";
+  const mode = String(plan.mode || "");
+  const modeLabel = mode === "fallback" ? '<span class="search-mode">fallback</span>' : "";
+  const termMarkup = terms.length
+    ? terms.map((term) => `<span class="search-term">${escapeHtml(term)}</span>`).join("")
+    : '<span class="search-empty">None</span>';
+  return `
+    <details class="search-details"${open ? " open" : ""}>
+      <summary>Search details ${modeLabel}</summary>
+      <dl>
+        <dt>Original question</dt>
+        <dd>${escapeHtml(original)}</dd>
+        <dt>Semantic query</dt>
+        <dd>${escapeHtml(semantic)}</dd>
+        <dt>BM25 keywords</dt>
+        <dd class="search-terms">${termMarkup}</dd>
+      </dl>
+    </details>
+  `;
+}
+
+function queryStageLabel(status) {
+  const detail = status?.progressDetail || status?.progress_detail;
+  const stage = String(detail?.stage || "");
+  if (stage === "planning") return "Planning search…";
+  if (stage === "searching") return "Searching indexed notes…";
+  if (stage === "answering") {
+    const rawCount = detail?.retrievedCount ?? detail?.retrieved_count;
+    const count = Number(rawCount);
+    return Number.isFinite(count)
+      ? `Retrieved ${count} chunk${count === 1 ? "" : "s"}; answering from the selected context…`
+      : "Answering from retrieved notes…";
+  }
+  const stateName = String(status?.state || status?.job?.state || "").toLowerCase();
+  return stateName === "queued" ? "Queued…" : "Preparing search…";
+}
+
+function renderQueryProgress(node, status) {
+  const body = node?.querySelector(".markdown-body");
+  if (!body) return;
+  const detail = status?.progressDetail || status?.progress_detail;
+  const plan = detail?.retrievalPlan || detail?.retrieval_plan;
+  body.classList.remove("error");
+  body.innerHTML = `<div class="query-stage">${escapeHtml(queryStageLabel(status))}</div>${renderSearchDetails(plan, { open: true })}`;
+  el.messages.scrollTop = el.messages.scrollHeight;
+}
+
+function replaceQueryResult(node, result) {
+  const body = node?.querySelector(".markdown-body");
+  if (!body) return;
+  body.classList.remove("error");
+  const answer = result?.answer || "The worker returned no answer.";
+  const plan = result?.retrievalPlan || result?.retrieval_plan;
+  body.innerHTML = `${renderText(answer)}${renderSearchDetails(plan)}`;
+  el.messages.scrollTop = el.messages.scrollHeight;
+}
+
 async function ask() {
   const question = el.question.value.trim();
   if (!question || !state.corpus || state.busy) return;
@@ -391,7 +454,7 @@ async function ask() {
     operation: "ask",
     corpus: selection.corpus,
     question,
-    retrieval_question: [...state.questionHistory.slice(-2), question].join("\n\n"),
+    retrieval_question: buildRetrievalQuestion(question),
     model: selection.model,
     strategy: "hybrid",
     max_sources: state.maxSources,
@@ -404,7 +467,7 @@ async function ask() {
       return;
     }
     rememberQuestion(question);
-    replaceMessage(pending, result.answer || "The worker returned no answer.");
+    replaceQueryResult(pending, result);
     renderSources(result.hits || result.sources || result.citations || []);
     renderContextMeter(result);
   } catch (error) {
@@ -449,8 +512,8 @@ async function submitAndWait(payload, kind, messageNode = null) {
           message: state.runtimeAction === "start" ? "Starting model" : "Stopping model",
         };
         if (state.model === targetModel) renderRuntime();
-      } else if (messageNode && stateName && stateName !== "queued") {
-        replaceMessage(messageNode, "thinking...");
+      } else if (messageNode) {
+        renderQueryProgress(messageNode, status);
       }
       if (["completed", "succeeded", "success"].includes(stateName)) break;
       if (["failed", "cancelled", "canceled"].includes(stateName)) {
@@ -663,6 +726,16 @@ async function decodeResponse(response) {
 
 function tryJson(text) { try { return JSON.parse(text); } catch { return { detail: text }; } }
 function delay(ms) { return new Promise((resolve) => window.setTimeout(resolve, ms)); }
+function buildRetrievalQuestion(question) {
+  const maximumLength = 30_000;
+  const separator = "\n\n";
+  const current = String(question).slice(0, maximumLength);
+  const history = state.questionHistory.slice(-2).join(separator);
+  const historyRoom = maximumLength - current.length - separator.length;
+  if (!history || historyRoom <= 0) return current;
+  const retainedHistory = history.slice(-historyRoom).trimStart();
+  return retainedHistory ? `${retainedHistory}${separator}${current}` : current;
+}
 function rememberQuestion(question) {
   state.questionHistory = [...state.questionHistory.filter((item) => item !== question), question].slice(-3);
 }
