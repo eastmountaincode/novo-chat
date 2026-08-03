@@ -548,9 +548,40 @@ class WorkerInternalAPITests(unittest.TestCase):
         self.assertEqual(job["state"], "queued")
         self.assertNotIn("operationId", job)
 
+        stored = self.app.state.job_store.get(job["jobId"], environment="staging")
+        self.app.state.job_store.set_running(stored.operation_id, now=NOW)
+        self.app.state.job_store.set_progress(
+            stored.operation_id,
+            0.30,
+            progress_detail={
+                "stage": "searching",
+                "retrievalPlan": {
+                    "originalQuestion": "What happened?",
+                    "semanticQuery": "experiment outcome",
+                    "bm25Terms": ["experiment", "outcome"],
+                    "mode": "planned",
+                },
+            },
+            now=NOW,
+        )
         status, _, _ = self.signed_request("GET", f"/internal/v1/jobs/{job['jobId']}")
         self.assertEqual(status.status_code, 200)
-        self.assertEqual(status.json()["job"]["jobId"], job["jobId"])
+        status_job = status.json()["job"]
+        self.assertEqual(status_job["jobId"], job["jobId"])
+        self.assertNotIn("result", status_job)
+        self.assertNotIn("operationId", status_job)
+        self.assertEqual(
+            status_job["progressDetail"],
+            {
+                "stage": "searching",
+                "retrievalPlan": {
+                    "originalQuestion": "What happened?",
+                    "semanticQuery": "experiment outcome",
+                    "bm25Terms": ["experiment", "outcome"],
+                    "mode": "planned",
+                },
+            },
+        )
 
         changed_revision = dict(payload)
         changed_revision["requestId"] = str(uuid4())

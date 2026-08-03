@@ -78,6 +78,15 @@ def _validate_safe_token(value: str, label: str) -> str:
     return value
 
 
+def validate_query_text(value: str) -> str:
+    if any(
+        (ord(character) < 32 and character not in "\t\n\r") or ord(character) == 127
+        for character in value
+    ):
+        raise ValueError("query text contains unsupported control characters")
+    return value
+
+
 def validate_same_origin_path(value: str) -> str:
     """Return a browser-safe same-origin absolute path.
 
@@ -157,6 +166,11 @@ class QueryStrategy(str, Enum):
     HYBRID = "hybrid"
     LEXICAL = "lexical"
     SEMANTIC = "semantic"
+
+
+class RetrievalPlanMode(str, Enum):
+    PLANNED = "planned"
+    FALLBACK = "fallback"
 
 
 class WorkerState(str, Enum):
@@ -299,6 +313,13 @@ class QueryRequest(JobRequest):
     max_sources: int = Field(default=16, ge=1, le=100)
     retrieval_top_k: int = Field(default=16, ge=1, le=32)
 
+    @field_validator("question", "retrieval_question")
+    @classmethod
+    def validate_question_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return validate_query_text(value)
+
     @field_validator("model")
     @classmethod
     def validate_model_token(cls, value: str) -> str:
@@ -308,6 +329,58 @@ class QueryRequest(JobRequest):
     def require_scope(self) -> "QueryRequest":
         if not self.scope:
             raise ValueError("a query requires at least one scope entry")
+        return self
+
+
+class RetrievalPlan(ProtocolModel):
+    """Bounded search artifacts that are safe to show to the requesting user."""
+
+    original_question: str = Field(min_length=1, max_length=32_000)
+    semantic_query: str = Field(min_length=1, max_length=4_000)
+    bm25_terms: tuple[str, ...] = Field(default_factory=tuple, max_length=32)
+    mode: RetrievalPlanMode = RetrievalPlanMode.PLANNED
+
+    @field_validator("original_question", "semantic_query")
+    @classmethod
+    def validate_query_text(cls, value: str) -> str:
+        return validate_query_text(value)
+
+    @field_validator("bm25_terms")
+    @classmethod
+    def validate_bm25_terms(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw_term in value:
+            term = raw_term.strip()
+            if (
+                not term
+                or len(term) > 128
+                or any(ord(character) < 32 or ord(character) == 127 for character in term)
+            ):
+                raise ValueError("BM25 terms must be printable nonempty strings of at most 128 characters")
+            key = term.casefold()
+            if key in seen:
+                raise ValueError("BM25 terms must be unique")
+            seen.add(key)
+            normalized.append(term)
+        return tuple(normalized)
+
+
+class QueryProgressStage(str, Enum):
+    PLANNING = "planning"
+    SEARCHING = "searching"
+    ANSWERING = "answering"
+
+
+class JobProgressDetail(ProtocolModel):
+    stage: QueryProgressStage
+    retrieval_plan: RetrievalPlan | None = None
+    retrieved_count: int | None = Field(default=None, ge=0, le=32)
+
+    @model_validator(mode="after")
+    def require_plan_after_planning(self) -> "JobProgressDetail":
+        if self.stage is not QueryProgressStage.PLANNING and self.retrieval_plan is None:
+            raise ValueError("searching and answering progress require a retrieval plan")
         return self
 
 
@@ -450,6 +523,7 @@ class QueryJobResult(ProtocolModel):
     model: str
     citations: tuple[Citation, ...]
     timings: QueryTimings | None = None
+    retrieval_plan: RetrievalPlan | None = None
 
 
 class IndexJobResult(ProtocolModel):
@@ -488,6 +562,7 @@ class JobView(ProtocolModel):
     progress: float = Field(ge=0.0, le=1.0)
     result: JobResult | None = None
     error: JobError | None = None
+    progress_detail: JobProgressDetail | None = None
 
 
 class JobSubmissionResponse(ProtocolModel):
@@ -967,6 +1042,7 @@ __all__ = [
     "JobState",
     "JobStatusResponse",
     "JobSubmissionResponse",
+    "JobProgressDetail",
     "JobView",
     "MAX_CITATION_EXCERPT_CHARS",
     "ModelDisplayDetails",
@@ -979,10 +1055,13 @@ __all__ = [
     "PageDocument",
     "ProtocolError",
     "QueryJobResult",
+    "QueryProgressStage",
     "QueryRequest",
     "QueryStrategy",
     "QueryTimings",
     "RebuildRequest",
+    "RetrievalPlan",
+    "RetrievalPlanMode",
     "VerifiedRequest",
     "VerifiedResponse",
     "WorkerState",
@@ -995,6 +1074,7 @@ __all__ = [
     "new_request_id",
     "sign_request",
     "sign_response",
+    "validate_query_text",
     "validate_request_id",
     "verify_request",
     "verify_response",

@@ -8,6 +8,7 @@ from novo_chat.protocol import (
     CapabilitiesResponse,
     Citation,
     GenerationResult,
+    JobProgressDetail,
     InMemoryReplayGuard,
     IndexStatusItem,
     MAX_CITATION_EXCERPT_CHARS,
@@ -16,9 +17,12 @@ from novo_chat.protocol import (
     PageDocument,
     ProtocolError,
     QueryJobResult,
+    QueryProgressStage,
     QueryRequest,
     QueryTimings,
     RebuildRequest,
+    RetrievalPlan,
+    RetrievalPlanMode,
     canonical_json,
     canonicalize_query,
     sign_request,
@@ -187,6 +191,75 @@ class ProtocolModelTests(unittest.TestCase):
             with self.subTest(values=values), self.assertRaises(ValidationError):
                 QueryTimings.model_validate(values)
 
+    def test_retrieval_plan_and_progress_are_bounded_typed_and_camel_cased(self):
+        plan = RetrievalPlan(
+            originalQuestion="What is Defne having trouble with?",
+            semanticQuery="Defne projects problems blockers troubleshooting",
+            bm25Terms=["Defne", "trouble", "blocked"],
+            mode="planned",
+        )
+        detail = JobProgressDetail(
+            stage=QueryProgressStage.ANSWERING,
+            retrievalPlan=plan,
+            retrievedCount=16,
+        )
+        payload = detail.model_dump(mode="json", by_alias=True)
+        self.assertEqual(
+            payload,
+            {
+                "stage": "answering",
+                "retrievalPlan": {
+                    "originalQuestion": "What is Defne having trouble with?",
+                    "semanticQuery": "Defne projects problems blockers troubleshooting",
+                    "bm25Terms": ["Defne", "trouble", "blocked"],
+                    "mode": "planned",
+                },
+                "retrievedCount": 16,
+            },
+        )
+        result = QueryJobResult(
+            answer="Answer",
+            model="model:a",
+            citations=(),
+            retrievalPlan=plan,
+        )
+        self.assertEqual(
+            result.model_dump(mode="json", by_alias=True)["retrievalPlan"],
+            payload["retrievalPlan"],
+        )
+        self.assertNotIn("rationale", payload["retrievalPlan"])
+        self.assertIs(plan.mode, RetrievalPlanMode.PLANNED)
+
+        invalid_plans = (
+            {
+                "originalQuestion": "Question",
+                "semanticQuery": "",
+                "bm25Terms": [],
+            },
+            {
+                "originalQuestion": "Question",
+                "semanticQuery": "query",
+                "bm25Terms": ["duplicate", "DUPLICATE"],
+            },
+            {
+                "originalQuestion": "Question",
+                "semanticQuery": "query",
+                "bm25Terms": ["x" * 129],
+            },
+            {
+                "originalQuestion": "Question",
+                "semanticQuery": "query",
+                "bm25Terms": [str(index) for index in range(33)],
+            },
+        )
+        for invalid in invalid_plans:
+            with self.subTest(invalid=invalid), self.assertRaises(ValidationError):
+                RetrievalPlan.model_validate(invalid)
+        with self.assertRaises(ValidationError):
+            JobProgressDetail(stage="searching")
+        with self.assertRaises(ValidationError):
+            JobProgressDetail(stage="inventing", retrievalPlan=plan)
+
     def test_capabilities_model_details_are_typed_additive_and_camel_cased(self):
         common = {
             "requestId": REQUEST_ID,
@@ -295,6 +368,32 @@ class ProtocolModelTests(unittest.TestCase):
         ):
             with self.subTest(field=field, value=value), self.assertRaises(ValidationError):
                 QueryRequest(**common, **{field: value})
+
+    def test_query_text_rejects_unsupported_controls_at_the_protocol_boundary(self):
+        scope = {"notebookId": "n1", "contentRevision": "rev", "indexSchemaVersion": "v1"}
+        common = {
+            "requestId": REQUEST_ID,
+            "idempotencyKey": "idempotency-1",
+            "actorUserId": "user-1",
+            "scope": [scope],
+            "question": "What happened?",
+            "retrievalQuestion": "Previous question\n\nWhat happened?",
+            "model": "model:a",
+        }
+        accepted = QueryRequest(
+            **{
+                **common,
+                "question": "What\tabout this?\nMore context\rFinal line",
+            }
+        )
+        self.assertIn("\n", accepted.question)
+        for field in ("question", "retrievalQuestion"):
+            for control in ("\x00", "\x0b", "\x0c", "\x1b", "\x7f"):
+                with (
+                    self.subTest(field=field, control=ord(control)),
+                    self.assertRaises(ValidationError),
+                ):
+                    QueryRequest(**{**common, field: f"unsafe{control}query"})
 
     def test_ranked_citation_fields_are_additive_bounded_and_camel_cased(self):
         legacy = Citation(notebookId="n1", pageId="p1", sourceUrl="/?page=p1")

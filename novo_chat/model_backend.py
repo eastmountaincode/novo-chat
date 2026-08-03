@@ -15,8 +15,15 @@ import requests
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .compute import ComputeError
-from .protocol import GenerationResult, ModelDisplayDetails, NotebookScope, QueryTimings
-from .rag_core import generation_messages
+from .protocol import (
+    GenerationResult,
+    ModelDisplayDetails,
+    NotebookScope,
+    QueryTimings,
+    RetrievalPlan,
+    RetrievalPlanMode,
+)
+from .rag_core import fallback_retrieval_plan, generation_messages
 
 
 _MODEL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -59,6 +66,11 @@ class _VllmUsage(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     prompt_tokens: int = Field(ge=1, le=2_000_000, strict=True)
+
+
+class _PlannerResponse(_StrictModel):
+    semantic_query: str = Field(min_length=1, max_length=4_000)
+    bm25_terms: tuple[str, ...] = Field(default_factory=tuple, max_length=32)
 
 
 class EmbeddingBackendConfig(_StrictModel):
@@ -234,6 +246,79 @@ class HttpModelBackend:
             retryable=True,
         )
 
+    def plan_query(
+        self,
+        question: str,
+        retrieval_question: str,
+        *,
+        model: str,
+    ) -> RetrievalPlan:
+        """Create displayable search inputs; any planner failure is non-fatal."""
+
+        fallback = fallback_retrieval_plan(question, retrieval_question)
+        backend = self.config.models.get(model)
+        if backend is None:
+            return fallback
+        contextual_question = str(retrieval_question or question).strip()
+        if len(contextual_question) > 12_000:
+            contextual_question = contextual_question[-12_000:].lstrip()
+        planner_input = json.dumps(
+            {
+                "current_question": question,
+                "recent_questions_and_current_question": contextual_question,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        payload: dict[str, Any] = {
+            "model": backend.served_model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Convert a user's Novo notebook question into retrieval inputs. "
+                        "Return exactly one JSON object with keys semantic_query and bm25_terms. "
+                        "semantic_query must be a concise standalone search query. bm25_terms "
+                        "must be an array of no more than 32 short exact names, acronyms, numbers, "
+                        "technical terms, and useful synonyms. Preserve every proper name, acronym, "
+                        "number, and exact technical term from the current question. Use recent "
+                        "questions only to resolve references such as 'that' or 'what about Kevin'. "
+                        "Do not answer the question, explain your work, cite sources, invent facts, "
+                        "or add any keys."
+                    ),
+                },
+                {"role": "user", "content": planner_input},
+            ],
+            "max_tokens": 256,
+            "temperature": 0,
+            "stream": False,
+        }
+        if backend.chat_template_kwargs:
+            payload["chat_template_kwargs"] = backend.chat_template_kwargs
+        try:
+            response = self._session.post(
+                f"{backend.base_url}/v1/chat/completions",
+                json=payload,
+                timeout=min(120.0, backend.timeout_seconds),
+            )
+            response.raise_for_status()
+            document = response.json()
+            if not isinstance(document, Mapping):
+                raise ValueError("planner response must be an object")
+            choice = (document.get("choices") or [{}])[0]
+            content = str((choice.get("message") or {}).get("content") or "").strip()
+            if content.startswith("```") and content.endswith("```"):
+                content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.IGNORECASE)
+            planned = _PlannerResponse.model_validate(json.loads(content))
+            return RetrievalPlan(
+                original_question=question,
+                semantic_query=planned.semantic_query,
+                bm25_terms=planned.bm25_terms,
+                mode=RetrievalPlanMode.PLANNED,
+            )
+        except (requests.RequestException, AttributeError, IndexError, TypeError, ValueError):
+            return fallback
+
     def generate(
         self,
         question: str,
@@ -323,6 +408,16 @@ class UnavailableModelBackend:
     def embed_query(self, text: str) -> np.ndarray:
         del text
         raise ComputeError("MODEL_BACKEND_UNAVAILABLE", "Model backend is unavailable.", retryable=True)
+
+    def plan_query(
+        self,
+        question: str,
+        retrieval_question: str,
+        *,
+        model: str,
+    ) -> RetrievalPlan:
+        del model
+        return fallback_retrieval_plan(question, retrieval_question)
 
     def generate(
         self,

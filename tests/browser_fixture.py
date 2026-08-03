@@ -92,10 +92,17 @@ class FixtureWorker:
         job_id = f"job_{uuid4().hex}"
         if operation == "query":
             notebook_id = scope[0]["notebookId"]
+            plan = {
+                "originalQuestion": payload["question"],
+                "semanticQuery": "treatment effect recorded response experiment",
+                "bm25Terms": ["treatment", "response", "experiment"],
+                "mode": "planned",
+            }
             result = {
                 "kind": "query",
                 "answer": "The recorded response increased after treatment [1].",
                 "model": payload["model"],
+                "retrievalPlan": plan,
                 "timings": {"prompt_eval_count": 8192, "num_ctx": 32768},
                 "citations": [
                     {
@@ -115,15 +122,51 @@ class FixtureWorker:
         job = {
             "jobId": job_id,
             "operation": operation,
-            "state": "succeeded",
-            "progress": 1.0,
+            "state": "queued" if operation == "query" else "succeeded",
+            "progress": 0.0 if operation == "query" else 1.0,
             "result": result,
+            "_polls": 0,
         }
         self.jobs[job_id] = job
         return {"job": job}
 
     async def job_status(self, job_id):
-        return {"job": self.jobs[job_id]}
+        job = self.jobs[job_id]
+        if job["operation"] == "query":
+            job["_polls"] += 1
+            plan = job["result"]["retrievalPlan"]
+            if job["_polls"] == 1:
+                job.update(
+                    {
+                        "state": "running",
+                        "progress": 0.05,
+                        "progressDetail": {"stage": "planning"},
+                    }
+                )
+            elif job["_polls"] == 2:
+                job.update(
+                    {
+                        "progress": 0.30,
+                        "progressDetail": {
+                            "stage": "searching",
+                            "retrievalPlan": plan,
+                        },
+                    }
+                )
+            elif job["_polls"] == 3:
+                job.update(
+                    {
+                        "progress": 0.65,
+                        "progressDetail": {
+                            "stage": "answering",
+                            "retrievalPlan": plan,
+                            "retrievedCount": 1,
+                        },
+                    }
+                )
+            else:
+                job.update({"state": "succeeded", "progress": 1.0})
+        return {"job": {key: value for key, value in job.items() if not key.startswith("_")}}
 
     async def aclose(self):
         return None

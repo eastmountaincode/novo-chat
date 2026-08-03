@@ -72,6 +72,15 @@ class DeploymentTemplateTests(unittest.TestCase):
         self.assertNotIn('"novo_rag*"', project)
         self.assertNotIn("novo_rag", manifest)
 
+    def test_deployment_guide_uses_wire_compatible_rolling_upgrade_order(self) -> None:
+        guide = read("README.md")
+        self.assertIn(
+            "restart the gateway with the new image before the\nworker",
+            guide,
+        )
+        self.assertIn("roll back the worker before the gateway", guide)
+        self.assertIn("The first-installation startup order below does not apply", guide)
+
     def test_json_templates_are_structurally_valid(self) -> None:
         for relative in (
             "compute-host/model-backends-staging.json.template",

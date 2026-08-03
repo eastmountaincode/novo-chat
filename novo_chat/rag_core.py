@@ -50,6 +50,35 @@ def tokenize(text: str) -> list[str]:
     return _TOKEN_RE.findall(normalize_search_text(text).lower())
 
 
+def fallback_retrieval_plan(question: str, retrieval_question: str | None = None):
+    """Build a bounded, deterministic plan when model planning is unavailable."""
+
+    from .protocol import RetrievalPlan, RetrievalPlanMode
+
+    semantic_query = str(retrieval_question or "").strip() or str(question).strip()
+    if len(semantic_query) > 4_000:
+        # The browser appends the current question last, so retain that end of
+        # the contextual query when a caller supplies unusually long history.
+        semantic_query = semantic_query[-4_000:].lstrip()
+    if not semantic_query:
+        semantic_query = str(question)[:4_000] or "Search Novo notes"
+    terms: list[str] = []
+    seen: set[str] = set()
+    for token in tokenize(question):
+        if token in seen:
+            continue
+        seen.add(token)
+        terms.append(token)
+        if len(terms) >= 32:
+            break
+    return RetrievalPlan(
+        original_question=question,
+        semantic_query=semantic_query,
+        bm25_terms=tuple(terms),
+        mode=RetrievalPlanMode.FALLBACK,
+    )
+
+
 def chunk_text(
     body: str,
     words: int = CHUNK_WORDS,
@@ -177,6 +206,7 @@ __all__ = [
     "check_citations",
     "chunk_text",
     "diversify_by_page",
+    "fallback_retrieval_plan",
     "generation_messages",
     "normalize_citation_glyphs",
     "tokenize",

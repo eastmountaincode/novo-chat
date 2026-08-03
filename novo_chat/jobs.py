@@ -47,6 +47,7 @@ class StoredJob:
     created_at: str
     updated_at: str
     progress: float
+    progress_detail: dict[str, Any] | None
     result: dict[str, Any] | None
     error_code: str | None
     error_message: str | None
@@ -146,6 +147,7 @@ class JobStore:
                     payload_json TEXT NOT NULL,
                     state TEXT NOT NULL,
                     progress REAL NOT NULL DEFAULT 0.0 CHECK(progress >= 0.0 AND progress <= 1.0),
+                    progress_detail_json TEXT,
                     result_json TEXT,
                     error_code TEXT,
                     error_message TEXT,
@@ -199,6 +201,11 @@ class JobStore:
                 connection.execute(
                     "ALTER TABLE active_indexes ADD COLUMN artifact_id TEXT NOT NULL DEFAULT ''"
                 )
+            operation_columns = {
+                str(row[1]) for row in connection.execute("PRAGMA table_info(operations)").fetchall()
+            }
+            if "progress_detail_json" not in operation_columns:
+                connection.execute("ALTER TABLE operations ADD COLUMN progress_detail_json TEXT")
             # The table-level unique constraint is retained for compatibility,
             # but terminal operations vacate their live dedupe key. This makes
             # deduplication active-only while preserving old submission handles.
@@ -366,7 +373,8 @@ class JobStore:
             SELECT
                 s.submission_id, s.environment, s.actor_user_id, s.request_id,
                 s.operation_id, s.created_at AS submission_created_at,
-                o.operation_type, o.state, o.progress, o.result_json,
+                o.operation_type, o.state, o.progress, o.progress_detail_json,
+                o.result_json,
                 o.error_code, o.error_message, o.retryable,
                 o.created_at AS operation_created_at, o.updated_at
             FROM submissions AS s
@@ -378,6 +386,9 @@ class JobStore:
         if row is None:
             raise JobNotFound("job not found")
         result = json.loads(row["result_json"]) if row["result_json"] else None
+        progress_detail = (
+            json.loads(row["progress_detail_json"]) if row["progress_detail_json"] else None
+        )
         return StoredJob(
             job_id=str(row["submission_id"]),
             operation_id=str(row["operation_id"]),
@@ -389,6 +400,7 @@ class JobStore:
             created_at=str(row["submission_created_at"]),
             updated_at=str(row["updated_at"]),
             progress=float(row["progress"]),
+            progress_detail=progress_detail,
             result=result,
             error_code=str(row["error_code"]) if row["error_code"] else None,
             error_message=str(row["error_message"]) if row["error_message"] else None,
@@ -447,7 +459,8 @@ class JobStore:
             updated = connection.execute(
                 """
                 UPDATE operations
-                SET state = ?, progress = 0.0, updated_at = ?
+                SET state = ?, progress = 0.0, progress_detail_json = NULL,
+                    updated_at = ?
                 WHERE operation_id = ? AND state = ?
                 """,
                 (
@@ -517,12 +530,20 @@ class JobStore:
             now=now,
         )
 
-    def set_progress(self, operation_id: str, progress: float, *, now: float | int | None = None) -> None:
+    def set_progress(
+        self,
+        operation_id: str,
+        progress: float,
+        *,
+        progress_detail: Mapping[str, Any] | None = None,
+        now: float | int | None = None,
+    ) -> None:
         self._transition(
             operation_id,
             allowed_from=(JobState.RUNNING,),
             state=JobState.RUNNING,
             progress=progress,
+            progress_detail=progress_detail,
             now=now,
         )
 
@@ -562,6 +583,7 @@ class JobStore:
         allowed_from: Iterable[JobState],
         state: JobState,
         progress: float | None = None,
+        progress_detail: Mapping[str, Any] | None = None,
         result: Mapping[str, Any] | None = None,
         error_code: str | None = None,
         error_message: str | None = None,
@@ -586,8 +608,10 @@ class JobStore:
             connection.execute(
                 """
                 UPDATE operations
-                SET state = ?, progress = COALESCE(?, progress), result_json = ?,
-                    error_code = ?, error_message = ?, retryable = ?, updated_at = ?
+                SET state = ?, progress = COALESCE(?, progress),
+                    progress_detail_json = COALESCE(?, progress_detail_json),
+                    result_json = ?, error_code = ?, error_message = ?,
+                    retryable = ?, updated_at = ?
                     , dedupe_key = CASE
                         WHEN ? IN (?, ?, ?)
                         THEN dedupe_key || ':terminal:' || operation_id
@@ -598,6 +622,10 @@ class JobStore:
                 (
                     state.value,
                     progress,
+                    (
+                        canonical_json(dict(progress_detail)).decode("utf-8")
+                        if progress_detail is not None else None
+                    ),
                     canonical_json(dict(result)).decode("utf-8") if result is not None else None,
                     error_code,
                     error_message,

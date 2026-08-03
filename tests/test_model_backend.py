@@ -18,7 +18,7 @@ from novo_chat.model_backend import (
     UnavailableModelBackend,
     load_model_backend_document,
 )
-from novo_chat.protocol import NotebookScope
+from novo_chat.protocol import NotebookScope, RetrievalPlanMode
 
 
 NO_INFORMATION = "The provided documents do not contain this information."
@@ -314,6 +314,136 @@ def test_embedding_generation_and_readiness_use_only_the_fake_session() -> None:
         {"url": "http://localhost:8000/health", "timeout": 2.0},
         {"url": "http://localhost:8000/health", "timeout": 2.0},
     ]
+
+
+def test_query_planner_uses_a_small_structured_call_and_preserves_original_question() -> None:
+    session = FakeSession(
+        posts=[
+            FakeResponse(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": json.dumps(
+                                    {
+                                        "semantic_query": "Defne projects blockers troubleshooting",
+                                        "bm25_terms": ["Defne", "blocked", "trouble"],
+                                    }
+                                )
+                            }
+                        }
+                    ]
+                }
+            )
+        ]
+    )
+    backend = HttpModelBackend(ModelBackendDocument.model_validate(valid_config()), session=session)
+
+    plan = backend.plan_query(
+        "What is Defne having trouble with?",
+        "What projects is Andrew working on?\n\nWhat is Defne having trouble with?",
+        model="model:a",
+    )
+
+    assert plan.original_question == "What is Defne having trouble with?"
+    assert plan.semantic_query == "Defne projects blockers troubleshooting"
+    assert plan.bm25_terms == ("Defne", "blocked", "trouble")
+    assert plan.mode is RetrievalPlanMode.PLANNED
+    request = session.post_calls[0]
+    assert request["url"] == "http://localhost:8000/v1/chat/completions"
+    assert request["timeout"] == 30
+    assert request["json"]["max_tokens"] == 256
+    assert request["json"]["temperature"] == 0
+    assert request["json"]["stream"] is False
+    assert request["json"]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "Do not answer the question" in request["json"]["messages"][0]["content"]
+    planner_input = json.loads(request["json"]["messages"][1]["content"])
+    assert planner_input["current_question"] == "What is Defne having trouble with?"
+    assert planner_input["recent_questions_and_current_question"].endswith(
+        "What is Defne having trouble with?"
+    )
+
+
+def test_query_planner_accepts_json_fences_and_truncates_history_from_the_front() -> None:
+    content = """```json
+{"semantic_query":"Kevin projects status","bm25_terms":["Kevin","projects"]}
+```"""
+    session = FakeSession(
+        posts=[FakeResponse({"choices": [{"message": {"content": content}}]})]
+    )
+    backend = HttpModelBackend(ModelBackendDocument.model_validate(valid_config()), session=session)
+    current_question = "What about Kevin?"
+    long_history = "old context " * 2_000 + current_question
+
+    plan = backend.plan_query(
+        current_question,
+        long_history,
+        model="model:a",
+    )
+
+    assert plan.mode is RetrievalPlanMode.PLANNED
+    assert plan.semantic_query == "Kevin projects status"
+    planner_input = json.loads(session.post_calls[0]["json"]["messages"][1]["content"])
+    contextual = planner_input["recent_questions_and_current_question"]
+    assert len(contextual) <= 12_000
+    assert contextual.endswith(current_question)
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        requests.Timeout("planner timeout"),
+        FakeResponse({"choices": [{"message": {"content": "{not-json"}}]}),
+        FakeResponse(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "semantic_query": "",
+                                    "bm25_terms": [],
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        ),
+        FakeResponse(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "semantic_query": "query",
+                                    "bm25_terms": [],
+                                    "rationale": "must never be exposed",
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        ),
+    ],
+)
+def test_query_planner_failures_fall_back_without_failing_the_query(response: Any) -> None:
+    session = FakeSession(posts=[response])
+    backend = HttpModelBackend(ModelBackendDocument.model_validate(valid_config()), session=session)
+
+    plan = backend.plan_query(
+        "What is definitely having trouble with?",
+        "Previous question\n\nWhat is definitely having trouble with?",
+        model="model:a",
+    )
+
+    assert plan.original_question == "What is definitely having trouble with?"
+    assert plan.semantic_query.endswith("What is definitely having trouble with?")
+    assert plan.mode is RetrievalPlanMode.FALLBACK
+    assert "definitely" in plan.bm25_terms
+    assert "trouble" in plan.bm25_terms
 
 
 def test_no_hit_generation_returns_exact_answer_without_network() -> None:

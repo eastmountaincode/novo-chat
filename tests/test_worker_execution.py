@@ -247,6 +247,13 @@ class WorkerExecutionTests(unittest.TestCase):
             completed.result["timings"],
             {"prompt_eval_count": 12_345, "num_ctx": 262_144},
         )
+        self.assertEqual(completed.result["retrievalPlan"]["originalQuestion"], "alpha?")
+        self.assertEqual(completed.result["retrievalPlan"]["mode"], "fallback")
+        self.assertEqual(completed.progress_detail["stage"], "answering")
+        self.assertEqual(
+            completed.progress_detail["retrievalPlan"],
+            completed.result["retrievalPlan"],
+        )
         self.assertEqual({row["notebookId"] for row in completed.result["citations"]}, {alpha.notebook_id})
         self.assertEqual({row["notebook_id"] for row in self.backend.last_hits}, {alpha.notebook_id})
 

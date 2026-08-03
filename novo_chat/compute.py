@@ -15,7 +15,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 
 import numpy as np
 from rank_bm25 import BM25Okapi
@@ -25,11 +25,14 @@ from .jobs import ActiveIndex
 from .protocol import (
     Citation,
     GenerationResult,
+    JobProgressDetail,
     MAX_CITATION_EXCERPT_CHARS,
     NotebookScope,
     PageDocument,
     QueryJobResult,
+    QueryProgressStage,
     QueryStrategy,
+    RetrievalPlan,
     canonical_json,
 )
 
@@ -52,6 +55,15 @@ class ComputeBackend(Protocol):
         ...
 
     def embed_query(self, text: str) -> np.ndarray:
+        ...
+
+    def plan_query(
+        self,
+        question: str,
+        retrieval_question: str,
+        *,
+        model: str,
+    ) -> RetrievalPlan:
         ...
 
     def generate(
@@ -386,6 +398,7 @@ class IndexRepository:
         strategy: QueryStrategy,
         max_sources: int,
         retrieval_top_k: int = 16,
+        progress_callback: Callable[[JobProgressDetail], None] | None = None,
     ) -> QueryJobResult:
         for label, value, upper_bound in (
             ("maxSources", max_sources, 100),
@@ -411,7 +424,28 @@ class IndexRepository:
                 vector_sets.append(artifact.vectors)
             chunks.extend(dict(chunk) for chunk in artifact.chunks)
 
+        plan = self._query_plan(
+            question=question,
+            retrieval_question=retrieval_question,
+            model=model,
+            use_model=bool(chunks),
+        )
+        if progress_callback is not None:
+            progress_callback(
+                JobProgressDetail(
+                    stage=QueryProgressStage.SEARCHING,
+                    retrieval_plan=plan,
+                )
+            )
         if not chunks:
+            if progress_callback is not None:
+                progress_callback(
+                    JobProgressDetail(
+                        stage=QueryProgressStage.ANSWERING,
+                        retrieval_plan=plan,
+                        retrieved_count=0,
+                    )
+                )
             generation = self._generation_result(
                 self.backend.generate(question, (), model=model, max_sources=max_sources)
             )
@@ -420,16 +454,26 @@ class IndexRepository:
                 model=model,
                 citations=(),
                 timings=generation.timings,
+                retrieval_plan=plan,
             )
         vectors = np.vstack(vector_sets).astype(np.float32, copy=False)
         ranked_hits = self._retrieve(
             chunks,
             vectors,
-            retrieval_question,
+            question,
+            plan,
             strategy=strategy,
             count=retrieval_top_k,
         )
         prompt_hits = ranked_hits[:max_sources]
+        if progress_callback is not None:
+            progress_callback(
+                JobProgressDetail(
+                    stage=QueryProgressStage.ANSWERING,
+                    retrieval_plan=plan,
+                    retrieved_count=len(ranked_hits),
+                )
+            )
         generation = self._generation_result(
             self.backend.generate(question, prompt_hits, model=model, max_sources=max_sources)
         )
@@ -456,7 +500,35 @@ class IndexRepository:
             model=model,
             citations=citations,
             timings=generation.timings,
+            retrieval_plan=plan,
         )
+
+    def _query_plan(
+        self,
+        *,
+        question: str,
+        retrieval_question: str,
+        model: str,
+        use_model: bool,
+    ) -> RetrievalPlan:
+        from .rag_core import fallback_retrieval_plan
+
+        fallback = fallback_retrieval_plan(question, retrieval_question)
+        planner = getattr(self.backend, "plan_query", None)
+        if not use_model or not callable(planner):
+            return fallback
+        try:
+            planned = RetrievalPlan.model_validate(
+                planner(question, retrieval_question, model=model)
+            )
+            return RetrievalPlan(
+                original_question=question,
+                semantic_query=planned.semantic_query,
+                bm25_terms=planned.bm25_terms,
+                mode=planned.mode,
+            )
+        except Exception:
+            return fallback
 
     @staticmethod
     def _generation_result(value: Any) -> GenerationResult:
@@ -498,7 +570,8 @@ class IndexRepository:
         self,
         chunks: Sequence[dict[str, Any]],
         vectors: np.ndarray,
-        query: str,
+        question: str,
+        plan: RetrievalPlan,
         *,
         strategy: QueryStrategy,
         count: int,
@@ -511,19 +584,52 @@ class IndexRepository:
         lexical_scores = np.zeros(len(chunks), dtype=np.float32)
 
         if strategy in {QueryStrategy.HYBRID, QueryStrategy.SEMANTIC}:
-            query_vector = np.asarray(self.backend.embed_query(query), dtype=np.float32).reshape(-1)
-            if not np.all(np.isfinite(query_vector)) or vectors.shape[1] != query_vector.shape[0]:
-                raise ComputeError("QUERY_EMBEDDING_INVALID", "Query embedding is incompatible.", retryable=True)
-            query_vector = query_vector / max(float(np.linalg.norm(query_vector)), 1e-10)
-            dense_scores = vectors @ query_vector
-            dense_top = np.argsort(-dense_scores)[:pool]
-            for rank, index in enumerate(dense_top):
-                fused[int(index)] = fused.get(int(index), 0.0) + 1.0 / (60 + rank)
+            dense_queries: list[str] = []
+            seen_queries: set[str] = set()
+            for candidate in (question, plan.semantic_query):
+                normalized = candidate.strip()
+                key = normalized.casefold()
+                if not normalized or key in seen_queries:
+                    continue
+                seen_queries.add(key)
+                dense_queries.append(normalized)
+            dense_rank_weight = 1.0 / max(1, len(dense_queries))
+            dense_score_sets: list[np.ndarray] = []
+            for dense_query in dense_queries:
+                query_vector = np.asarray(
+                    self.backend.embed_query(dense_query),
+                    dtype=np.float32,
+                ).reshape(-1)
+                if not np.all(np.isfinite(query_vector)) or vectors.shape[1] != query_vector.shape[0]:
+                    raise ComputeError(
+                        "QUERY_EMBEDDING_INVALID",
+                        "Query embedding is incompatible.",
+                        retryable=True,
+                    )
+                query_vector = query_vector / max(float(np.linalg.norm(query_vector)), 1e-10)
+                scores = vectors @ query_vector
+                dense_score_sets.append(scores)
+                dense_top = np.lexsort((np.arange(len(scores)), -scores))[:pool]
+                for rank, index in enumerate(dense_top):
+                    fused[int(index)] = (
+                        fused.get(int(index), 0.0)
+                        + dense_rank_weight / (60 + rank)
+                    )
+            if dense_score_sets:
+                dense_scores = np.max(np.vstack(dense_score_sets), axis=0)
 
         if strategy in {QueryStrategy.HYBRID, QueryStrategy.LEXICAL}:
             bm25 = BM25Okapi([tokenize(str(chunk.get("indexed_text") or "")) for chunk in chunks])
-            lexical_scores = np.asarray(bm25.get_scores(tokenize(query)), dtype=np.float32)
-            lexical_top = np.argsort(-lexical_scores)[:pool]
+            lexical_tokens: list[str] = []
+            seen_tokens: set[str] = set()
+            for text in (question, *plan.bm25_terms):
+                for token in tokenize(text):
+                    if token in seen_tokens:
+                        continue
+                    seen_tokens.add(token)
+                    lexical_tokens.append(token)
+            lexical_scores = np.asarray(bm25.get_scores(lexical_tokens), dtype=np.float32)
+            lexical_top = np.lexsort((np.arange(len(lexical_scores)), -lexical_scores))[:pool]
             for rank, index in enumerate(lexical_top):
                 fused[int(index)] = fused.get(int(index), 0.0) + 1.0 / (60 + rank)
             lexical_max = float(np.max(lexical_scores)) if len(lexical_scores) else 0.0

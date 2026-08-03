@@ -169,6 +169,7 @@ def _job_view(job: StoredJob) -> JobView:
         progress=job.progress,
         result=job.result,
         error=error,
+        progress_detail=job.progress_detail,
     )
 
 

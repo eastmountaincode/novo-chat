@@ -436,7 +436,7 @@ def test_submit_requires_same_origin_json_and_csrf(gateway) -> None:
 
 
 def test_job_status_hides_result_and_release_reauthorizes(gateway) -> None:
-    client, novo, _worker = gateway
+    client, novo, worker = gateway
     context = client.get("/lab-chat/api/context", headers=session_headers()).json()
     accepted = client.post(
         "/lab-chat/api/jobs",
@@ -449,10 +449,30 @@ def test_job_status_hides_result_and_release_reauthorizes(gateway) -> None:
         },
     ).json()
     job_id = accepted["jobId"]
+    worker.jobs[job_id]["progressDetail"] = {
+        "stage": "answering",
+        "retrievalPlan": {
+            "originalQuestion": "What happened?",
+            "semanticQuery": "experiment outcome",
+            "bm25Terms": ["experiment", "outcome"],
+            "mode": "planned",
+        },
+        "retrievedCount": 1,
+    }
 
     poll = client.get(f"/lab-chat/api/jobs/{job_id}", headers=session_headers())
     assert poll.status_code == 200
     assert "result" not in poll.json()
+    assert poll.json()["progressDetail"] == {
+        "stage": "answering",
+        "retrievalPlan": {
+            "originalQuestion": "What happened?",
+            "semanticQuery": "experiment outcome",
+            "bm25Terms": ["experiment", "outcome"],
+            "mode": "planned",
+        },
+        "retrievedCount": 1,
+    }
     released = client.get(f"/lab-chat/api/jobs/{job_id}/result", headers=session_headers())
     assert released.status_code == 200
     assert released.json()["result"]["answer"] == "Grounded answer [1]"
@@ -659,6 +679,7 @@ def test_gateway_ui_preserves_aorus_layout_and_ranked_retrieval_contract() -> No
     assert "width: 384px" in css
     assert "border-radius: 0" in css
     assert ".source summary:focus" in css
+    assert ".search-details" in css
 
     assert 'addMessage("assistant", "thinking...")' in javascript
     assert 'addMessage("assistant", "Start a model before asking.")' in javascript
@@ -687,6 +708,13 @@ def test_gateway_ui_preserves_aorus_layout_and_ranked_retrieval_contract() -> No
     assert '"partially ready"' not in javascript
     assert '"live Novo"' not in javascript
     assert '["total VRAM", totalVramGb != null && Number.isFinite(Number(totalVramGb))' in javascript
+    assert '"Planning search…"' in javascript
+    assert '"Searching indexed notes…"' in javascript
+    assert "answering from the selected context" in javascript
+    assert "renderSearchDetails(plan, { open: true })" in javascript
+    assert "escapeHtml(original)" in javascript
+    assert "escapeHtml(semantic)" in javascript
+    assert "escapeHtml(term)" in javascript
     assert 'style="' not in javascript
 
 
@@ -727,6 +755,52 @@ def test_gateway_accepts_legacy_max_sources_limit_but_bounds_retrieval_depth() -
         GatewayJobRequest.model_validate({**common, "max_sources": 101})
     with pytest.raises(ValueError):
         GatewayJobRequest.model_validate({**common, "retrieval_top_k": 33})
+
+
+def test_gateway_rejects_unsupported_query_controls_before_submission(gateway) -> None:
+    client, _novo, worker = gateway
+    context = client.get("/lab-chat/api/context", headers=session_headers()).json()
+    payload = {
+        "operation": "ask",
+        "corpus": "novo:notebook-a",
+        "question": "unsafe\x00question",
+        "model": "approved-model",
+    }
+
+    response = client.post(
+        "/lab-chat/api/jobs",
+        headers=auth_headers(context["csrfToken"]),
+        json=payload,
+    )
+
+    assert response.status_code == 400
+    assert worker.submissions == []
+    accepted = GatewayJobRequest.model_validate(
+        {
+            **payload,
+            "question": "line one\tline two\nline three\rline four",
+            "retrieval_question": "previous\n\ncurrent",
+        }
+    )
+    assert "\n" in accepted.question
+    for field in ("question", "retrieval_question"):
+        for control in ("\x00", "\x1b", "\x7f"):
+            with pytest.raises(ValueError):
+                GatewayJobRequest.model_validate(
+                    {
+                        **payload,
+                        "question": "safe question",
+                        field: f"unsafe{control}query",
+                    }
+                )
+
+
+def test_browser_query_history_is_bounded_and_keeps_the_current_question() -> None:
+    javascript = (Path(__file__).parents[1] / "novo_chat/gateway/web/app.js").read_text(encoding="utf-8")
+    assert "retrieval_question: buildRetrievalQuestion(question)" in javascript
+    assert "const maximumLength = 30_000;" in javascript
+    assert "history.slice(-historyRoom)" in javascript
+    assert "${retainedHistory}${separator}${current}" in javascript
 
 
 def test_job_ownership_is_not_disclosed_to_another_user(gateway) -> None:

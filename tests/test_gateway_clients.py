@@ -5,21 +5,24 @@ import json
 from pathlib import Path
 
 import httpx
+import pytest
 
 from novo_chat.gateway.novo_client import NovoIntegrationClient, NovoRevisionChanged
 from novo_chat.gateway.secrets import FileSecret, write_test_secret
-from novo_chat.gateway.worker_client import WorkerRejected
+from novo_chat.gateway.worker_client import WorkerRejected, public_job_status
 from novo_chat.gateway.worker_http_client import WorkerHttpClient
 from novo_chat.protocol import (
     CapabilitiesResponse,
     ErrorResponse,
     JobError,
     JobOperation,
+    JobProgressDetail,
     JobState,
     JobSubmissionResponse,
     JobView,
     QueryJobResult,
     QueryTimings,
+    RetrievalPlan,
     canonical_json,
     ingest_pages_checksum,
     sign_response,
@@ -262,6 +265,15 @@ def test_worker_client_signs_exact_typed_body_and_has_no_cookie_channel(tmp_path
                 created_at="2026-07-31T12:00:00Z",
                 updated_at="2026-07-31T12:00:01Z",
                 progress=1.0,
+                progress_detail=JobProgressDetail(
+                    stage="answering",
+                    retrievalPlan=RetrievalPlan(
+                        originalQuestion="What happened?",
+                        semanticQuery="experiment outcome",
+                        bm25Terms=["experiment", "outcome"],
+                    ),
+                    retrievedCount=2,
+                ),
                 result=QueryJobResult(
                     answer="Answer",
                     model="approved-model",
@@ -318,6 +330,16 @@ def test_worker_client_signs_exact_typed_body_and_has_no_cookie_channel(tmp_path
                 "prompt_eval_count": 12_345,
                 "num_ctx": 262_144,
             }
+            assert result["job"]["progressDetail"] == {
+                "stage": "answering",
+                "retrievalPlan": {
+                    "originalQuestion": "What happened?",
+                    "semanticQuery": "experiment outcome",
+                    "bm25Terms": ["experiment", "outcome"],
+                    "mode": "planned",
+                },
+                "retrievedCount": 2,
+            }
 
     asyncio.run(exercise())
     assert seen_body["actorUserId"] == "user-1"
@@ -328,6 +350,56 @@ def test_worker_client_signs_exact_typed_body_and_has_no_cookie_channel(tmp_path
             "indexSchemaVersion": "novo-chat-v1",
         }
     ]
+
+
+def test_public_job_status_allowlists_only_typed_progress_artifacts() -> None:
+    status = public_job_status(
+        {
+            "job": {
+                "jobId": "job-1",
+                "state": "running",
+                "operation": "query",
+                "progress": 0.3,
+                "progressDetail": {
+                    "stage": "searching",
+                    "retrievalPlan": {
+                        "originalQuestion": "Question",
+                        "semanticQuery": "search query",
+                        "bm25Terms": ["search"],
+                        "mode": "planned",
+                    },
+                },
+                "result": {"answer": "must stay private until completion"},
+                "internalOperationId": "must-not-leak",
+            }
+        }
+    )
+
+    assert status["progressDetail"]["stage"] == "searching"
+    assert status["progressDetail"]["retrievalPlan"]["semanticQuery"] == "search query"
+    assert "result" not in status
+    assert "internalOperationId" not in status
+
+    with pytest.raises(WorkerRejected):
+        public_job_status(
+            {
+                "job": {
+                    "jobId": "job-1",
+                    "state": "running",
+                    "operation": "query",
+                    "progressDetail": {
+                        "stage": "searching",
+                        "retrievalPlan": {
+                            "originalQuestion": "Question",
+                            "semanticQuery": "query",
+                            "bm25Terms": [],
+                            "mode": "planned",
+                            "rationale": "must not pass through",
+                        },
+                    },
+                }
+            }
+        )
 
 
 def test_worker_client_computes_canonical_ingest_checksum(tmp_path: Path) -> None:
