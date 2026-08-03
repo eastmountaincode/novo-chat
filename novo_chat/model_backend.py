@@ -32,6 +32,13 @@ from .rag_core import (
 
 
 _MODEL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_CONTEXT_LIMIT_RE = re.compile(
+    r"^This model's maximum context length is (?P<maximum>\d{1,7}) tokens\. "
+    r"However, you requested (?P<output>\d{1,7}) output tokens and your prompt "
+    r"contains at least (?P<input>\d{1,7}) input tokens, for a total of at least "
+    r"(?P<total>\d{1,7}) tokens\."
+)
+_MIN_USEFUL_GENERATION_TOKENS = 64
 _PLANNER_SYSTEM_PROMPT = (
     "Expand a user's Novo notebook question into retrieval inputs. This is query "
     "expansion, not question restatement. Return exactly one JSON object with keys "
@@ -102,6 +109,45 @@ def _loopback_origin(value: str) -> str:
         except ValueError as exc:
             raise ValueError("backend URL must use an explicit loopback host") from exc
     return value.rstrip("/")
+
+
+def _is_valid_context_overflow(
+    response: requests.Response,
+    *,
+    requested_output_tokens: int,
+    configured_context_tokens: int | None,
+) -> bool:
+    """Return whether a response is a validated vLLM context overflow."""
+
+    if response.status_code != 400 or configured_context_tokens is None:
+        return False
+    try:
+        document = response.json()
+    except (requests.RequestException, TypeError, ValueError):
+        return False
+    if not isinstance(document, Mapping):
+        return False
+    error = document.get("error", document)
+    if not isinstance(error, Mapping):
+        return False
+    message = error.get("message")
+    if not isinstance(message, str) or len(message) > 2_000:
+        return False
+    match = _CONTEXT_LIMIT_RE.match(message)
+    if match is None:
+        return False
+    maximum = int(match.group("maximum"))
+    output_tokens = int(match.group("output"))
+    input_tokens = int(match.group("input"))
+    total_tokens = int(match.group("total"))
+    if (
+        maximum != configured_context_tokens
+        or output_tokens != requested_output_tokens
+        or total_tokens != input_tokens + output_tokens
+        or total_tokens <= maximum
+    ):
+        return False
+    return True
 
 
 class _StrictModel(BaseModel):
@@ -410,11 +456,35 @@ class HttpModelBackend:
         if backend.chat_template_kwargs:
             payload["chat_template_kwargs"] = backend.chat_template_kwargs
         try:
-            response = self._session.post(
-                f"{backend.base_url}/v1/chat/completions",
-                json=payload,
-                timeout=backend.timeout_seconds,
-            )
+            response = None
+            for attempt in range(4):
+                response = self._session.post(
+                    f"{backend.base_url}/v1/chat/completions",
+                    json=payload,
+                    timeout=backend.timeout_seconds,
+                )
+                if response.status_code < 400:
+                    break
+                current_max_tokens = int(payload["max_tokens"])
+                if not _is_valid_context_overflow(
+                    response,
+                    requested_output_tokens=current_max_tokens,
+                    configured_context_tokens=backend.max_model_len,
+                ):
+                    response.raise_for_status()
+                reduced_max_tokens = max(
+                    _MIN_USEFUL_GENERATION_TOKENS,
+                    current_max_tokens // 2,
+                )
+                if attempt == 3 or reduced_max_tokens >= current_max_tokens:
+                    raise ComputeError(
+                        "CONTEXT_LENGTH_EXCEEDED",
+                        "The selected notebook context is too large for this model. "
+                        "Reduce the number of sources and try again.",
+                        retryable=False,
+                    )
+                payload = {**payload, "max_tokens": reduced_max_tokens}
+            assert response is not None
             response.raise_for_status()
             document = response.json()
             if not isinstance(document, Mapping):
@@ -429,6 +499,8 @@ class HttpModelBackend:
                         prompt_eval_count=usage.prompt_tokens,
                         num_ctx=backend.max_model_len,
                     )
+        except ComputeError:
+            raise
         except (requests.RequestException, AttributeError, IndexError, TypeError, ValueError) as exc:
             raise ComputeError(
                 "GENERATION_UNAVAILABLE",
