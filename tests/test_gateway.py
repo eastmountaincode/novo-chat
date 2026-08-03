@@ -658,6 +658,7 @@ def test_gateway_ui_preserves_aorus_layout_and_ranked_retrieval_contract() -> No
     assert "width: 288px" in css
     assert "width: 384px" in css
     assert "border-radius: 0" in css
+    assert ".source summary:focus" in css
 
     assert 'addMessage("assistant", "thinking...")' in javascript
     assert 'addMessage("assistant", "Start a model before asking.")' in javascript
@@ -675,6 +676,11 @@ def test_gateway_ui_preserves_aorus_layout_and_ranked_retrieval_contract() -> No
     assert 'fill.style.width = `${fill.dataset.progressFill}%`' in javascript
     assert 'specRow("Notebook updated", formatBuiltAt(corpus.updated_at))' in javascript
     assert 'querySelector(".meter > div").style.width' in javascript
+    assert 'el.messages.addEventListener("click", openCitationSource)' in javascript
+    assert "source.open = true" in javascript
+    assert 'source.scrollIntoView({ behavior: "smooth", block: "nearest" })' in javascript
+    assert 'source.querySelector("summary")?.focus({ preventScroll: true })' in javascript
+    assert 'href="#source-${n.trim()}">${n.trim()}</a>' in javascript
     assert 'specRow("status", statusText)' in javascript
     assert '`${needsRebuild} of ${rows.length} need rebuild`' in javascript
     assert 'aggregate ? "latest rebuild" : "last rebuilt"' in javascript
