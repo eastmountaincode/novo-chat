@@ -652,6 +652,11 @@ a {
   grid-template-columns: 36px 54px minmax(0, 1fr);
 }
 
+.source summary:focus {
+  outline: 2px solid #000;
+  outline-offset: -2px;
+}
+
 .source summary code,
 .source summary > :last-child {
   overflow: hidden;

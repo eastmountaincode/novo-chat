@@ -76,6 +76,7 @@ function bindEvents() {
       void ask();
     }
   });
+  el.messages.addEventListener("click", openCitationSource);
 }
 
 async function refreshContext() {
@@ -531,6 +532,22 @@ function renderSources(hits) {
   }).join("");
 }
 
+function openCitationSource(event) {
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  const link = target.closest('a[href^="#source-"]');
+  if (!link || !el.messages.contains(link)) return;
+  const sourceId = link.getAttribute("href")?.slice(1);
+  if (!sourceId) return;
+  const source = document.getElementById(sourceId);
+  if (!(source instanceof HTMLDetailsElement) || !el.sources.contains(source)) return;
+
+  event.preventDefault();
+  source.open = true;
+  source.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  source.querySelector("summary")?.focus({ preventScroll: true });
+}
+
 function sourceMetrics(hit) {
   const parts = [];
   const chunk = hit.chunkIdx ?? hit.chunk_idx;
@@ -656,7 +673,7 @@ function renderText(value) {
   return normalizeCitationBrackets(escapeHtml(value))
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\[((?:\d+\s*,\s*)*\d+)\]/g, (_match, numbers) => numbers.split(",").map((n) => `<a class="citation-link" href="#source-${n.trim()}">[${n.trim()}]</a>`).join(" "));
+    .replace(/\[((?:\d+\s*,\s*)*\d+)\]/g, (_match, numbers) => numbers.split(",").map((n) => `<a class="citation-link" href="#source-${n.trim()}">${n.trim()}</a>`).join(" "));
 }
 function normalizeCitationBrackets(value) {
   return value
