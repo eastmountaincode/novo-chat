@@ -381,10 +381,29 @@ function renderSearchDetails(plan, { open = false } = {}) {
   const original = String(plan.originalQuestion || plan.original_question || "");
   const semantic = String(plan.semanticQuery || plan.semantic_query || "");
   const rawTerms = plan.bm25Terms || plan.bm25_terms || [];
-  const terms = Array.isArray(rawTerms) ? rawTerms.map(String).filter(Boolean).slice(0, 32) : [];
+  const terms = Array.isArray(rawTerms) ? rawTerms.map(String).filter(Boolean).slice(0, 12) : [];
   if (!original && !semantic && !terms.length) return "";
   const mode = String(plan.mode || "");
   const modeLabel = mode === "fallback" ? '<span class="search-mode">fallback</span>' : "";
+  if (mode === "fallback") {
+    const normalizedOriginal = original.trim().toLocaleLowerCase().replace(/\s+/g, " ");
+    const normalizedSemantic = semantic.trim().toLocaleLowerCase().replace(/\s+/g, " ");
+    const contextualQuery = semantic && normalizedSemantic !== normalizedOriginal
+      ? `<dt>Contextual query</dt><dd>${escapeHtml(semantic)}</dd>`
+      : "";
+    return `
+      <details class="search-details"${open ? " open" : ""}>
+        <summary>Search details ${modeLabel}</summary>
+        <dl>
+          <dt>Original question</dt>
+          <dd>${escapeHtml(original)}</dd>
+          ${contextualQuery}
+          <dt>Search expansion</dt>
+          <dd class="search-empty">No additional expansion was generated.</dd>
+        </dl>
+      </details>
+    `;
+  }
   const termMarkup = terms.length
     ? terms.map((term) => `<span class="search-term">${escapeHtml(term)}</span>`).join("")
     : '<span class="search-empty">None</span>';
@@ -394,9 +413,9 @@ function renderSearchDetails(plan, { open = false } = {}) {
       <dl>
         <dt>Original question</dt>
         <dd>${escapeHtml(original)}</dd>
-        <dt>Semantic query</dt>
+        <dt>Semantic expansion</dt>
         <dd>${escapeHtml(semantic)}</dd>
-        <dt>BM25 keywords</dt>
+        <dt>BM25 expansion</dt>
         <dd class="search-terms">${termMarkup}</dd>
       </dl>
     </details>

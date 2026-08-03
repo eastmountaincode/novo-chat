@@ -712,6 +712,9 @@ def test_gateway_ui_preserves_aorus_layout_and_ranked_retrieval_contract() -> No
     assert '"Searching indexed notes…"' in javascript
     assert "answering from the selected context" in javascript
     assert "renderSearchDetails(plan, { open: true })" in javascript
+    assert "Semantic expansion" in javascript
+    assert "BM25 expansion" in javascript
+    assert "No additional expansion was generated." in javascript
     assert "escapeHtml(original)" in javascript
     assert "escapeHtml(semantic)" in javascript
     assert "escapeHtml(term)" in javascript

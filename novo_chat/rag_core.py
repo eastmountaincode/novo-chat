@@ -7,6 +7,7 @@ network imports.  Changing these constants requires a new index schema version.
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any, Mapping, Sequence
 
 
@@ -15,8 +16,60 @@ CHUNK_OVERLAP_WORDS = 70
 MAX_CHUNKS_PER_PAGE = 2
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
+_TERM_EDGE_PUNCTUATION_RE = re.compile(r"^[^a-z0-9]+|[^a-z0-9]+$")
+_ALPHABETIC_PUNCTUATION_RE = re.compile(r"(?<=[a-z])[^a-z0-9\s]+(?=[a-z])")
 _CITATION_RE = re.compile(r"\[((?:\d+\s*,\s*)*\d+)\]")
 _NONSTANDARD_CITATION_RE = re.compile(r"【\s*((?:\d+\s*,\s*)*\d+)(?:†[^】]*)?】")
+_QUERY_SCAFFOLD_TOKENS = frozenset(
+    {
+        "a",
+        "about",
+        "an",
+        "and",
+        "are",
+        "at",
+        "be",
+        "been",
+        "being",
+        "did",
+        "do",
+        "does",
+        "for",
+        "had",
+        "has",
+        "have",
+        "how",
+        "in",
+        "is",
+        "it",
+        "me",
+        "of",
+        "on",
+        "or",
+        "please",
+        "tell",
+        "that",
+        "the",
+        "their",
+        "them",
+        "these",
+        "they",
+        "this",
+        "those",
+        "to",
+        "was",
+        "were",
+        "what",
+        "when",
+        "where",
+        "which",
+        "who",
+        "whom",
+        "whose",
+        "why",
+        "with",
+    }
+)
 
 SYSTEM_PROMPT = (
     "You are a research assistant answering questions about Novo electronic "
@@ -48,6 +101,74 @@ def normalize_search_text(text: str) -> str:
 
 def tokenize(text: str) -> list[str]:
     return _TOKEN_RE.findall(normalize_search_text(text).lower())
+
+
+def meaningful_search_tokens(text: str) -> list[str]:
+    """Return retrieval-bearing tokens without ordinary question scaffolding."""
+
+    return [token for token in tokenize(text) if token not in _QUERY_SCAFFOLD_TOKENS]
+
+
+def _planner_term_key(text: str) -> str:
+    """Collapse cosmetic punctuation while preserving spaces and digit boundaries."""
+
+    normalized = unicodedata.normalize("NFKC", normalize_search_text(text)).casefold()
+    normalized = _TERM_EDGE_PUNCTUATION_RE.sub("", normalized.strip())
+    normalized = _ALPHABETIC_PUNCTUATION_RE.sub("", normalized)
+    return " ".join(normalized.split())
+
+
+def sanitize_bm25_expansion_terms(
+    question: str,
+    terms: Sequence[str],
+    *,
+    limit: int = 12,
+) -> tuple[str, ...]:
+    """Keep only bounded terms that add a meaningful token to the question."""
+
+    question_tokens = set(tokenize(question))
+    question_keys = set(question_tokens)
+    for question_part in normalize_search_text(question).split():
+        key = _planner_term_key(question_part)
+        if key:
+            question_keys.add(key)
+    sanitized: list[str] = []
+    seen: set[str] = set()
+    contributed_tokens: set[str] = set()
+    for raw_term in terms:
+        term = str(raw_term).strip()
+        key = _planner_term_key(term)
+        novel_tokens = set(meaningful_search_tokens(term)) - question_tokens
+        if (
+            not term
+            or not key
+            or key in question_keys
+            or key in seen
+            or not (novel_tokens - contributed_tokens)
+        ):
+            continue
+        seen.add(key)
+        contributed_tokens.update(novel_tokens)
+        sanitized.append(term)
+        if len(sanitized) >= limit:
+            break
+    return tuple(sanitized)
+
+
+def retrieval_plan_adds_signal(
+    question: str,
+    semantic_query: str,
+    bm25_terms: Sequence[str],
+    *,
+    minimum_new_tokens: int = 2,
+) -> bool:
+    """Return whether a planned query adds real retrieval vocabulary."""
+
+    question_tokens = set(meaningful_search_tokens(_planner_term_key(question)))
+    expanded_tokens = set(meaningful_search_tokens(_planner_term_key(semantic_query)))
+    for term in bm25_terms:
+        expanded_tokens.update(meaningful_search_tokens(_planner_term_key(term)))
+    return len(expanded_tokens - question_tokens) >= minimum_new_tokens
 
 
 def fallback_retrieval_plan(question: str, retrieval_question: str | None = None):
@@ -208,6 +329,9 @@ __all__ = [
     "diversify_by_page",
     "fallback_retrieval_plan",
     "generation_messages",
+    "meaningful_search_tokens",
     "normalize_citation_glyphs",
+    "retrieval_plan_adds_signal",
+    "sanitize_bm25_expansion_terms",
     "tokenize",
 ]

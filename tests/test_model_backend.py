@@ -327,7 +327,14 @@ def test_query_planner_uses_a_small_structured_call_and_preserves_original_quest
                                 "content": json.dumps(
                                     {
                                         "semantic_query": "Defne projects blockers troubleshooting",
-                                        "bm25_terms": ["Defne", "blocked", "trouble"],
+                                        "bm25_terms": [
+                                            "Defne",
+                                            "blocked",
+                                            "blockers",
+                                            "difficulty",
+                                            "stuck",
+                                            "trouble",
+                                        ],
                                     }
                                 )
                             }
@@ -347,7 +354,7 @@ def test_query_planner_uses_a_small_structured_call_and_preserves_original_quest
 
     assert plan.original_question == "What is Defne having trouble with?"
     assert plan.semantic_query == "Defne projects blockers troubleshooting"
-    assert plan.bm25_terms == ("Defne", "blocked", "trouble")
+    assert plan.bm25_terms == ("blocked", "blockers", "difficulty", "stuck")
     assert plan.mode is RetrievalPlanMode.PLANNED
     request = session.post_calls[0]
     assert request["url"] == "http://localhost:8000/v1/chat/completions"
@@ -356,6 +363,28 @@ def test_query_planner_uses_a_small_structured_call_and_preserves_original_quest
     assert request["json"]["temperature"] == 0
     assert request["json"]["stream"] is False
     assert request["json"]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert request["json"]["response_format"]["type"] == "json_schema"
+    assert request["json"]["response_format"]["json_schema"]["strict"] is True
+    assert (
+        request["json"]["response_format"]["json_schema"]["schema"]["properties"]
+        ["bm25_terms"]["maxItems"]
+        == 12
+    )
+    assert (
+        request["json"]["response_format"]["json_schema"]["schema"]["properties"]
+        ["bm25_terms"]["minItems"]
+        == 4
+    )
+    assert set(
+        request["json"]["response_format"]["json_schema"]["schema"]["required"]
+    ) == {"semantic_query", "bm25_terms"}
+    assert (
+        request["json"]["response_format"]["json_schema"]["schema"]
+        ["additionalProperties"]
+        is False
+    )
+    assert "query expansion, not question restatement" in request["json"]["messages"][0]["content"]
+    assert "capitalization-only rewrite" in request["json"]["messages"][0]["content"]
     assert "Do not answer the question" in request["json"]["messages"][0]["content"]
     planner_input = json.loads(request["json"]["messages"][1]["content"])
     assert planner_input["current_question"] == "What is Defne having trouble with?"
@@ -366,7 +395,7 @@ def test_query_planner_uses_a_small_structured_call_and_preserves_original_quest
 
 def test_query_planner_accepts_json_fences_and_truncates_history_from_the_front() -> None:
     content = """```json
-{"semantic_query":"Kevin projects status","bm25_terms":["Kevin","projects"]}
+{"semantic_query":"Kevin projects status","bm25_terms":["Kevin","projects","status","work","tasks"]}
 ```"""
     session = FakeSession(
         posts=[FakeResponse({"choices": [{"message": {"content": content}}]})]
@@ -383,10 +412,183 @@ def test_query_planner_accepts_json_fences_and_truncates_history_from_the_front(
 
     assert plan.mode is RetrievalPlanMode.PLANNED
     assert plan.semantic_query == "Kevin projects status"
+    assert plan.bm25_terms == ("projects", "status", "work", "tasks")
     planner_input = json.loads(session.post_calls[0]["json"]["messages"][1]["content"])
     contextual = planner_input["recent_questions_and_current_question"]
     assert len(contextual) <= 12_000
     assert contextual.endswith(current_question)
+
+
+def test_query_planner_repairs_a_valid_but_retrieval_noop_response() -> None:
+    session = FakeSession(
+        posts=[
+            FakeResponse(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": json.dumps(
+                                    {
+                                        "semantic_query": "What is Arya confused about?",
+                                        "bm25_terms": ["What", "Arya", "confused", "about"],
+                                    }
+                                )
+                            }
+                        }
+                    ]
+                }
+            ),
+            FakeResponse(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": json.dumps(
+                                    {
+                                        "semantic_query": (
+                                            "Arya confusion uncertainty lack of understanding "
+                                            "unsure unclear not sure no clue stuck trouble difficulty"
+                                        ),
+                                        "bm25_terms": [
+                                            "Arya",
+                                            "confused",
+                                            "confusion",
+                                            "uncertainty",
+                                            "unclear",
+                                            "not sure",
+                                        ],
+                                    }
+                                )
+                            }
+                        }
+                    ]
+                }
+            ),
+        ]
+    )
+    backend = HttpModelBackend(ModelBackendDocument.model_validate(valid_config()), session=session)
+
+    plan = backend.plan_query(
+        "What is Arya confused about?",
+        "What is Arya confused about?",
+        model="model:a",
+    )
+
+    assert plan.mode is RetrievalPlanMode.PLANNED
+    assert plan.semantic_query.startswith("Arya confusion uncertainty")
+    assert plan.bm25_terms == ("confusion", "uncertainty", "unclear", "not sure")
+    assert len(session.post_calls) == 2
+    assert (
+        session.post_calls[1]["json"]["response_format"]
+        == session.post_calls[0]["json"]["response_format"]
+    )
+    repair_input = json.loads(session.post_calls[1]["json"]["messages"][1]["content"])
+    assert repair_input["rejected_plan"] == {
+        "semantic_query": "What is Arya confused about?",
+        "bm25_terms": ["What", "Arya", "confused", "about"],
+    }
+    assert "merely copied or restated" in repair_input["correction"]
+
+
+def test_query_planner_falls_back_after_two_retrieval_noop_responses() -> None:
+    first_noop = FakeResponse(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "semantic_query": "What is Arya confused about?",
+                                "bm25_terms": ["What", "Arya", "confused", "about"],
+                            }
+                        )
+                    }
+                }
+            ]
+        }
+    )
+    second_noop = FakeResponse(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "semantic_query": "what is ARYA confused about",
+                                "bm25_terms": ["WHAT", "ARYA", "CONFUSED", "ABOUT"],
+                            }
+                        )
+                    }
+                }
+            ]
+        }
+    )
+    session = FakeSession(posts=[first_noop, second_noop])
+    backend = HttpModelBackend(ModelBackendDocument.model_validate(valid_config()), session=session)
+
+    plan = backend.plan_query(
+        "What is Arya confused about?",
+        "What is Arya confused about?",
+        model="model:a",
+    )
+
+    assert plan.mode is RetrievalPlanMode.FALLBACK
+    assert plan.semantic_query == "What is Arya confused about?"
+    assert len(session.post_calls) == 2
+
+
+def test_query_planner_rejects_punctuation_padded_bm25_terms() -> None:
+    first_noop = FakeResponse(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "semantic_query": "What is Arya confused about?",
+                                "bm25_terms": ["What", "Arya", "confused", "about"],
+                            }
+                        )
+                    }
+                }
+            ]
+        }
+    )
+    padded_response = FakeResponse(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "semantic_query": "Arya uncertainty and lack of understanding",
+                                "bm25_terms": [
+                                    "uncertainty",
+                                    "un/certainty",
+                                    "uncer_tainty",
+                                    "uncerta.inty",
+                                ],
+                            }
+                        )
+                    }
+                }
+            ]
+        }
+    )
+    session = FakeSession(posts=[first_noop, padded_response])
+    backend = HttpModelBackend(ModelBackendDocument.model_validate(valid_config()), session=session)
+
+    plan = backend.plan_query(
+        "What is Arya confused about?",
+        "What is Arya confused about?",
+        model="model:a",
+    )
+
+    assert plan.mode is RetrievalPlanMode.FALLBACK
+    assert plan.semantic_query == "What is Arya confused about?"
+    assert len(session.post_calls) == 2
+    repair_input = json.loads(session.post_calls[1]["json"]["messages"][1]["content"])
+    assert "four distinct BM25 expansion terms" in repair_input["correction"]
 
 
 @pytest.mark.parametrize(
