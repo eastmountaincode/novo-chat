@@ -23,7 +23,10 @@ const state = {
   maxSourcesMax: 16,
   retrievalTopK: 16,
   questionHistory: [],
+  answerCounter: 0,
+  selectedAnswer: null,
 };
+let messageData = new WeakMap();
 
 const MODEL_MAY_BE_RUNNING = new Set(["ready", "running", "starting", "draining", "failed"]);
 
@@ -31,7 +34,7 @@ const el = Object.fromEntries([
   "corpus", "indexPanel", "indexBtn", "maxSources", "maxSourcesValue", "model", "runtime",
   "modelSpecs", "clearBtn", "userName", "novoLink", "computeBanner",
   "computeDetail", "retryButton", "activeCorpus", "activeModel", "messages", "askForm",
-  "question", "askBtn", "contextMeter", "sources",
+  "question", "askBtn", "contextMeter", "sources", "sourceQuestion",
 ].map((id) => [id, document.getElementById(id)]));
 
 function apiPath(segment) {
@@ -264,14 +267,16 @@ function renderIndexPanel() {
       : state.indexStatus.exactReady
         ? "Ready"
         : aggregate ? `${needsRebuild} of ${rows.length} need rebuild` : "Needs rebuild";
+  const detailsOpen = el.indexPanel.querySelector("details")?.open === true;
   el.indexPanel.innerHTML = `
-    <div class="specs-title">Index</div>
-    <div class="specs-rows">
-      ${specRow("status", statusText)}
+    <details class="settings-details"${detailsOpen ? " open" : ""}>
+      <summary>Index <span class="index-state">${escapeHtml(statusText)}</span></summary>
+      <div class="specs-rows">
       ${activated.length ? specRow(aggregate ? "latest rebuild" : "last rebuilt", formatBuiltAt(activated[activated.length - 1])) : ""}
       ${corpus.updated_at ? specRow("Notebook updated", formatBuiltAt(corpus.updated_at)) : ""}
       ${specRow("chunks", knownChunks.length ? formatInt(chunkCount) : "-")}
-    </div>
+      </div>
+    </details>
     ${rebuildingSelected ? renderProgress("Rebuilding index", state.indexProgress) : ""}
   `;
   applyProgressWidths(el.indexPanel);
@@ -346,8 +351,9 @@ function renderModelSpecs() {
     ["context", maxModelLen != null ? `${formatInt(maxModelLen)} tokens` : null],
     ["thinking", spec.thinking],
   ].filter((row) => row[1] !== null && row[1] !== undefined && row[1] !== "");
+  const detailsOpen = el.modelSpecs.querySelector("details")?.open === true;
   el.modelSpecs.innerHTML = rows.length
-    ? `<div class="specs-title">Model specs</div><div class="specs-rows">${rows.map(([label, value]) => specRow(label, value)).join("")}</div>`
+    ? `<details class="settings-details"${detailsOpen ? " open" : ""}><summary>Model specs</summary><div class="specs-rows">${rows.map(([label, value]) => specRow(label, value)).join("")}</div></details>`
     : "";
 }
 
@@ -398,7 +404,6 @@ function renderSearchDetails(plan, { open = false } = {}) {
   const terms = Array.isArray(rawTerms) ? rawTerms.map(String).filter(Boolean).slice(0, 12) : [];
   if (!original && !semantic && !terms.length) return "";
   const mode = String(plan.mode || "");
-  const modeLabel = mode === "fallback" ? '<span class="search-mode">fallback</span>' : "";
   if (mode === "fallback") {
     const normalizedOriginal = original.trim().toLocaleLowerCase().replace(/\s+/g, " ");
     const normalizedSemantic = semantic.trim().toLocaleLowerCase().replace(/\s+/g, " ");
@@ -407,13 +412,11 @@ function renderSearchDetails(plan, { open = false } = {}) {
       : "";
     return `
       <details class="search-details"${open ? " open" : ""}>
-        <summary>Search details ${modeLabel}</summary>
+        <summary>Search details</summary>
         <dl>
-          <dt>Original question</dt>
-          <dd>${escapeHtml(original)}</dd>
           ${contextualQuery}
           <dt>Search expansion</dt>
-          <dd class="search-empty">No additional expansion was generated.</dd>
+          <dd class="search-empty">Searched using your question without additional terms.</dd>
         </dl>
       </details>
     `;
@@ -423,13 +426,11 @@ function renderSearchDetails(plan, { open = false } = {}) {
     : '<span class="search-empty">None</span>';
   return `
     <details class="search-details"${open ? " open" : ""}>
-      <summary>Search details ${modeLabel}</summary>
+      <summary>Search details</summary>
       <dl>
-        <dt>Original question</dt>
-        <dd>${escapeHtml(original)}</dd>
-        <dt>Semantic expansion</dt>
+        <dt>Related wording</dt>
         <dd>${escapeHtml(semantic)}</dd>
-        <dt>BM25 expansion</dt>
+        <dt>Additional keywords</dt>
         <dd class="search-terms">${termMarkup}</dd>
       </dl>
     </details>
@@ -439,15 +440,9 @@ function renderSearchDetails(plan, { open = false } = {}) {
 function queryStageLabel(status) {
   const detail = status?.progressDetail || status?.progress_detail;
   const stage = String(detail?.stage || "");
-  if (stage === "planning") return "Planning search…";
-  if (stage === "searching") return "Searching indexed notes…";
-  if (stage === "answering") {
-    const rawCount = detail?.retrievedCount ?? detail?.retrieved_count;
-    const count = Number(rawCount);
-    return Number.isFinite(count)
-      ? `Answering from ${count} selected context chunk${count === 1 ? "" : "s"}…`
-      : "Answering from retrieved notes…";
-  }
+  if (stage === "planning") return "Preparing search…";
+  if (stage === "searching") return "Searching notes…";
+  if (stage === "answering") return "Writing answer…";
   const stateName = String(status?.state || status?.job?.state || "").toLowerCase();
   return stateName === "queued" ? "Queued…" : "Preparing search…";
 }
@@ -458,8 +453,22 @@ function renderQueryProgress(node, status) {
   const detail = status?.progressDetail || status?.progress_detail;
   const plan = detail?.retrievalPlan || detail?.retrieval_plan;
   body.classList.remove("error");
-  body.innerHTML = `<div class="query-stage">${escapeHtml(queryStageLabel(status))}</div>${renderSearchDetails(plan, { open: true })}`;
-  el.messages.scrollTop = el.messages.scrollHeight;
+  let stage = body.querySelector(".query-stage");
+  if (!stage) {
+    body.innerHTML = '<div class="query-stage" role="status"></div>';
+    stage = body.querySelector(".query-stage");
+  }
+  const label = queryStageLabel(status);
+  if (stage.textContent !== label) stage.textContent = label;
+  const record = messageData.get(node);
+  const planKey = JSON.stringify(plan || null);
+  if (record && plan && record.planKey !== planKey) {
+    const previous = body.querySelector(".search-details");
+    const open = previous?.open === true;
+    previous?.remove();
+    body.insertAdjacentHTML("beforeend", renderSearchDetails(plan, { open }));
+    record.planKey = planKey;
+  }
 }
 
 function replaceQueryResult(node, result) {
@@ -468,8 +477,18 @@ function replaceQueryResult(node, result) {
   body.classList.remove("error");
   const answer = result?.answer || "The worker returned no answer.";
   const plan = result?.retrievalPlan || result?.retrieval_plan;
-  body.innerHTML = `${renderText(answer)}${renderSearchDetails(plan)}`;
-  el.messages.scrollTop = el.messages.scrollHeight;
+  const record = messageData.get(node);
+  if (!record) return;
+  const stickToBottom = el.messages.scrollHeight - el.messages.scrollTop - el.messages.clientHeight < 80;
+  const disclosure = body.querySelector(".search-details");
+  record.result = result;
+  record.hits = result.hits || result.sources || result.citations || [];
+  const pageCount = groupSources(record.hits).length;
+  body.innerHTML = `${renderText(answer, `${record.id}-source`)}<div class="answer-actions"><button type="button" class="answer-sources" aria-pressed="false">Sources · ${pageCount} page${pageCount === 1 ? "" : "s"}</button></div>`;
+  if (disclosure && record.planKey === JSON.stringify(plan || null)) body.append(disclosure);
+  else body.insertAdjacentHTML("beforeend", renderSearchDetails(plan, { open: disclosure?.open === true }));
+  selectAnswer(node);
+  if (stickToBottom) el.messages.scrollTop = el.messages.scrollHeight;
 }
 
 async function ask() {
@@ -481,7 +500,9 @@ async function ask() {
   }
   addMessage("user", question);
   el.question.value = "";
-  const pending = addMessage("assistant", "thinking...");
+  const pending = addMessage("assistant", "Preparing search…");
+  messageData.set(pending, { id: `answer-${++state.answerCounter}`, question });
+  el.messages.scrollTop = el.messages.scrollHeight;
   const selection = { corpus: state.corpus, model: state.model };
   const payload = {
     operation: "ask",
@@ -501,8 +522,6 @@ async function ask() {
     }
     rememberQuestion(question);
     replaceQueryResult(pending, result);
-    renderSources(result.hits || result.sources || result.citations || []);
-    renderContextMeter(result);
   } catch (error) {
     if (selectionMatches(selection)) replaceMessage(pending, `Error: ${error.message}`, true);
   } finally {
@@ -601,30 +620,58 @@ async function controlRuntime(action) {
   }
 }
 
-function renderSources(hits) {
+function groupSources(hits) {
+  const groups = new Map();
+  hits.forEach((hit, index) => {
+    const notebookId = String(hit.notebookId || hit.notebook_id || "");
+    const pageId = String(hit.pageId || hit.page_id || hit.sourceUrl || hit.source_url || hit.file || `hit-${index}`);
+    const key = JSON.stringify([notebookId, pageId]);
+    if (!groups.has(key)) groups.set(key, { notebookId, hits: [] });
+    groups.get(key).hits.push({ hit, sourceIndex: Number(hit.sourceIdx || hit.source_idx || index + 1) });
+  });
+  return [...groups.values()];
+}
+
+function selectAnswer(node) {
+  const record = messageData.get(node);
+  if (!record?.result) return;
+  state.selectedAnswer?.querySelector(".answer-sources")?.setAttribute("aria-pressed", "false");
+  state.selectedAnswer = node;
+  node.querySelector(".answer-sources")?.setAttribute("aria-pressed", "true");
+  el.sourceQuestion.textContent = record.question;
+  renderSources(record.hits, record.id);
+  renderContextMeter(record.result);
+}
+
+function renderSources(hits, answerId = "") {
   if (!hits.length) {
-    el.sources.innerHTML = '<div class="empty">No retrieval yet.</div>';
+    el.sources.innerHTML = `<div class="empty">${answerId ? "No matching sources." : "No retrieval yet."}</div>`;
     return;
   }
-  el.sources.innerHTML = hits.map((hit, index) => {
+  el.sources.innerHTML = groupSources(hits).map((group) => {
+    const hit = group.hits[0].hit;
     const sourceHref = safeSourceHref(hit.sourceUrl || hit.source_url || hit.novoUrl || hit.novo_url);
-    const sourceIndex = Number(hit.sourceIdx || hit.source_idx || index + 1);
-    const notebookId = hit.notebookId || hit.notebook_id || "";
-    const notebook = state.corpora.find((item) => item.id === notebookId)?.name || hit.notebook || hit.notebookName || notebookId;
-    const used = hit.usedInContext ?? hit.used_in_context;
+    const notebook = state.corpora.find((item) => item.id === group.notebookId || item.corpus_key === `novo:${group.notebookId}`)?.name || hit.notebookName || hit.notebook || "";
+    const preview = String(hit.text || hit.excerpt || "").replace(/\s+/g, " ").trim();
     return `
-      <details class="source ${used === false ? "source-ranked-only" : ""}" id="source-${sourceIndex}">
+      <details class="source-page">
         <summary>
-          <span class="mono">#${sourceIndex}</span>
-          <span class="mono">${Number(hit.score || 0).toFixed(3)}</span>
-          <code>${escapeHtml(hit.file || hit.title || "Novo source")}</code>
+          <span class="source-page-title">${escapeHtml(hit.title || "Untitled page")}</span>
+          <span class="source-meta">${escapeHtml(notebook)}${notebook ? " · " : ""}${group.hits.length} passage${group.hits.length === 1 ? "" : "s"}</span>
+          <span class="source-preview">${escapeHtml(preview.slice(0, 150))}${preview.length > 150 ? "…" : ""}</span>
         </summary>
-        <div class="source-body">
-          <div class="source-title">${escapeHtml(hit.title || "")}</div>
-          <div class="source-meta">${escapeHtml(notebook)}</div>
-          <div class="mono source-meta">${escapeHtml(sourceMetrics(hit))}</div>
-          ${sourceHref ? `<div><a href="${escapeAttribute(sourceHref)}" target="_blank" rel="noreferrer">Open Novo page</a></div>` : ""}
-          <div class="source-text">${escapeHtml(hit.text || hit.excerpt || "")}</div>
+        <div class="source-page-body">
+          ${sourceHref ? `<a class="source-page-link" href="${escapeAttribute(sourceHref)}" target="_blank" rel="noreferrer">Open Novo page</a>` : ""}
+          ${group.hits.map(({ hit: passage, sourceIndex }) => {
+            const used = passage.usedInContext ?? passage.used_in_context;
+            return `<details class="source ${used === false ? "source-ranked-only" : ""}" id="${answerId}-source-${sourceIndex}">
+              <summary><span class="mono">[${sourceIndex}]</span><span>${used === false ? "Additional match" : "Context passage"}</span></summary>
+              <div class="source-body">
+                <div class="source-text">${escapeHtml(passage.text || passage.excerpt || "")}</div>
+                <details class="source-scores"><summary>Search scores</summary><div class="mono source-meta">rank=${Number(passage.score || 0).toFixed(3)} · ${escapeHtml(sourceMetrics(passage))}</div></details>
+              </div>
+            </details>`;
+          }).join("")}
         </div>
       </details>
     `;
@@ -634,14 +681,22 @@ function renderSources(hits) {
 function openCitationSource(event) {
   const target = event.target;
   if (!(target instanceof Element)) return;
-  const link = target.closest('a[href^="#source-"]');
-  if (!link || !el.messages.contains(link)) return;
+  const node = target.closest(".message");
+  if (!node || !el.messages.contains(node)) return;
+  if (target.closest(".answer-sources")) {
+    selectAnswer(node);
+    return;
+  }
+  const link = target.closest("a.citation-link");
+  if (!link || !messageData.get(node)?.result) return;
+  event.preventDefault();
+  if (state.selectedAnswer !== node) selectAnswer(node);
   const sourceId = link.getAttribute("href")?.slice(1);
   if (!sourceId) return;
   const source = document.getElementById(sourceId);
   if (!(source instanceof HTMLDetailsElement) || !el.sources.contains(source)) return;
 
-  event.preventDefault();
+  source.closest(".source-page").open = true;
   source.open = true;
   source.scrollIntoView({ behavior: "smooth", block: "nearest" });
   source.querySelector("summary")?.focus({ preventScroll: true });
@@ -704,7 +759,10 @@ function replaceMessage(node, content, isError = false) {
 
 function clearConversation() {
   state.questionHistory = [];
+  state.selectedAnswer = null;
+  messageData = new WeakMap();
   el.messages.innerHTML = "";
+  el.sourceQuestion.textContent = "";
   renderSources([]);
   renderContextMeter(null);
 }
@@ -778,11 +836,11 @@ function rememberQuestion(question) {
 function selectionMatches(selection) {
   return state.corpus === selection.corpus && state.model === selection.model;
 }
-function renderText(value) {
+function renderText(value, citationPrefix = "source") {
   return normalizeCitationBrackets(escapeHtml(value))
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\[((?:\d+\s*,\s*)*\d+)\]/g, (_match, numbers) => numbers.split(",").map((n) => `<a class="citation-link" href="#source-${n.trim()}">${n.trim()}</a>`).join(" "));
+    .replace(/\[((?:\d+\s*,\s*)*\d+)\]/g, (_match, numbers) => numbers.split(",").map((n) => `<a class="citation-link" href="#${citationPrefix}-${n.trim()}">${n.trim()}</a>`).join(" "));
 }
 function normalizeCitationBrackets(value) {
   return value

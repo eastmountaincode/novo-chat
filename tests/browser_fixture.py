@@ -67,6 +67,7 @@ class FixtureWorker:
     def __init__(self) -> None:
         self.jobs: dict[str, dict] = {}
         self.model_ready = False
+        self.query_count = 0
 
     async def health(self):
         return {"state": "ready", "queueHealthy": True, "indexServiceHealthy": True}
@@ -75,6 +76,7 @@ class FixtureWorker:
         return {
             "models": ["demo:model"],
             "operations": ["query", "index_rebuild", "model_start", "model_stop"],
+            "modelDetails": {"demo:model": {"modelSize": "27B", "maxTokens": 2048, "maxModelLen": 32768, "thinking": "enabled", "totalVramGb": 96}},
         }
 
     async def model_status(self):
@@ -96,6 +98,11 @@ class FixtureWorker:
         del request_id, idempotency_key, actor_user_id
         job_id = f"job_{uuid4().hex}"
         if operation == "query":
+            self.query_count += 1
+            followup = self.query_count > 1
+            page_id = "page-controls" if followup else "page-result"
+            title = "Control measurements" if followup else "Dose response experiment"
+            excerpt = "Untreated controls were measured at baseline." if followup else "The treated samples showed an increased response."
             notebook_id = scope[0]["notebookId"]
             plan = {
                 "originalQuestion": payload["question"],
@@ -105,19 +112,28 @@ class FixtureWorker:
             }
             result = {
                 "kind": "query",
-                "answer": "The recorded response increased after treatment [1].",
+                "answer": "Untreated controls were measured at baseline [1]." if followup else "The recorded response increased after treatment [1]. The repeat measurement agreed [2].",
                 "model": payload["model"],
                 "retrievalPlan": plan,
-                "timings": {"prompt_eval_count": 8192, "num_ctx": 32768},
+                "timings": {"prompt_eval_count": 4096 if followup else 8192, "num_ctx": 32768},
                 "citations": [
                     {
                         "notebookId": notebook_id,
-                        "pageId": "page-result",
-                        "sourceUrl": "/?page=page-result",
-                        "title": "Dose response experiment",
-                        "excerpt": "The treated samples showed an increased response.",
+                        "pageId": page_id,
+                        "sourceUrl": f"/?page={page_id}",
+                        "title": title,
+                        "file": f"{page_id}.md",
+                        "excerpt": excerpt,
+                        "sourceIdx": 1,
+                        "usedInContext": True,
                         "score": 0.91,
-                    }
+                    },
+                    {"notebookId": notebook_id, "pageId": page_id, "title": title,
+                     "excerpt": "A second measurement confirmed the result.", "sourceIdx": 2,
+                     "sourceUrl": f"/?page={page_id}", "usedInContext": True, "score": 0.88},
+                    {"notebookId": notebook_id, "pageId": f"{page_id}-protocol", "title": f"{title}: protocol",
+                     "excerpt": "The protocol records sample preparation and instrument settings.", "sourceIdx": 3,
+                     "sourceUrl": f"/?page={page_id}-protocol", "usedInContext": False, "score": 0.81},
                 ],
             }
         elif operation == "index_rebuild":
@@ -151,7 +167,7 @@ class FixtureWorker:
                         "progressDetail": {"stage": "planning"},
                     }
                 )
-            elif job["_polls"] == 2:
+            elif job["_polls"] <= 4:
                 job.update(
                     {
                         "progress": 0.30,
@@ -161,14 +177,14 @@ class FixtureWorker:
                         },
                     }
                 )
-            elif job["_polls"] == 3:
+            elif job["_polls"] <= 12:
                 job.update(
                     {
                         "progress": 0.65,
                         "progressDetail": {
                             "stage": "answering",
                             "retrievalPlan": plan,
-                            "retrievedCount": 1,
+                            "retrievedCount": 2,
                         },
                     }
                 )
