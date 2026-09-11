@@ -33,12 +33,12 @@
             </div>
           </label>
 
-          <label class="field">
-            <span>Model</span>
+          <div class="field">
+            <label for="model">Model</label>
             <select id="model"></select>
             <div id="runtime" class="runtime"></div>
             <div id="modelSpecs" class="specs"></div>
-          </label>
+          </div>
 
           <button id="clearBtn" type="button" class="clear-btn">Clear conversation</button>
 
@@ -72,7 +72,8 @@
 
       <aside class="sources">
         <div class="sources-header">
-          <h2>Retrieved</h2>
+          <h2>Sources</h2>
+          <div id="sourceQuestion" class="source-question"></div>
           <div id="contextMeter" class="context-meter"></div>
         </div>
         <div id="sources" class="source-list">
