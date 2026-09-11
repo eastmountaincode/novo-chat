@@ -383,6 +383,9 @@ class HttpModelBackend:
         }
 
         def request_plan(document: Mapping[str, Any]) -> _PlannerResponse:
+            planner_template_kwargs = dict(backend.chat_template_kwargs)
+            if "enable_thinking" in planner_template_kwargs:
+                planner_template_kwargs["enable_thinking"] = False
             payload: dict[str, Any] = {
                 "model": backend.served_model,
                 "messages": [
@@ -401,8 +404,8 @@ class HttpModelBackend:
                 "stream": False,
                 "response_format": _PLANNER_RESPONSE_FORMAT,
             }
-            if backend.chat_template_kwargs:
-                payload["chat_template_kwargs"] = backend.chat_template_kwargs
+            if planner_template_kwargs:
+                payload["chat_template_kwargs"] = planner_template_kwargs
             response = self._session.post(
                 f"{backend.base_url}/v1/chat/completions",
                 json=payload,
