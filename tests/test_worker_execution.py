@@ -248,7 +248,7 @@ class WorkerExecutionTests(unittest.TestCase):
         rebuilt = self.rebuild((alpha, beta, empty))
         self.assertEqual(rebuilt.state, JobState.SUCCEEDED)
         self.assertTrue(all(self.store.index_status((alpha, beta, empty), environment="staging")))
-        self.backend.timings = QueryTimings(prompt_eval_count=12_345, num_ctx=262_144)
+        self.backend.timings = QueryTimings(prompt_eval_count=12_345, num_ctx=262_144, eval_count=345)
 
         query = self.submit(
             JobOperation.QUERY,
@@ -266,7 +266,7 @@ class WorkerExecutionTests(unittest.TestCase):
         self.assertEqual(completed.result["kind"], "query")
         self.assertEqual(
             completed.result["timings"],
-            {"prompt_eval_count": 12_345, "num_ctx": 262_144},
+            {"prompt_eval_count": 12_345, "num_ctx": 262_144, "eval_count": 345},
         )
         self.assertEqual(completed.result["retrievalPlan"]["originalQuestion"], "alpha?")
         self.assertEqual(completed.result["retrievalPlan"]["mode"], "fallback")

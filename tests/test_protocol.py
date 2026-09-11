@@ -168,7 +168,9 @@ class ProtocolModelTests(unittest.TestCase):
         legacy = QueryJobResult(answer="Answer", model="model:a", citations=())
         self.assertIsNone(legacy.timings)
 
-        timings = QueryTimings(prompt_eval_count=12_345, num_ctx=262_144)
+        input_only = QueryTimings(prompt_eval_count=12_345, num_ctx=262_144)
+        self.assertIsNone(input_only.eval_count)
+        timings = QueryTimings(prompt_eval_count=12_345, num_ctx=262_144, eval_count=345)
         generation = GenerationResult(answer="Answer [1]", timings=timings)
         result = QueryJobResult(
             answer=generation.answer,
@@ -178,7 +180,7 @@ class ProtocolModelTests(unittest.TestCase):
         )
         self.assertEqual(
             result.model_dump(mode="json", by_alias=True)["timings"],
-            {"prompt_eval_count": 12_345, "num_ctx": 262_144},
+            {"prompt_eval_count": 12_345, "num_ctx": 262_144, "eval_count": 345},
         )
 
         for values in (
@@ -190,6 +192,11 @@ class ProtocolModelTests(unittest.TestCase):
         ):
             with self.subTest(values=values), self.assertRaises(ValidationError):
                 QueryTimings.model_validate(values)
+
+        for output in (-1, True, "123", 1.5, 2_000_001):
+            with self.subTest(output=output), self.assertRaises(ValidationError):
+                QueryTimings(prompt_eval_count=123, num_ctx=1024, eval_count=output)
+        self.assertEqual(QueryTimings(prompt_eval_count=123, num_ctx=1024, eval_count=0).eval_count, 0)
 
     def test_retrieval_plan_and_progress_are_bounded_typed_and_camel_cased(self):
         plan = RetrievalPlan(

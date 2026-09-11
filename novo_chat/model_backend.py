@@ -160,6 +160,9 @@ class _VllmUsage(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     prompt_tokens: int = Field(ge=1, le=2_000_000, strict=True)
+    # vLLM counts every generated token here, including hidden reasoning.
+    # A missing count must not be interpreted as a zero-token completion.
+    completion_tokens: int | None = Field(default=None, ge=0, le=2_000_000, strict=True)
 
 
 class _PlannerResponse(_StrictModel):
@@ -526,6 +529,7 @@ class HttpModelBackend:
                     timings = QueryTimings(
                         prompt_eval_count=usage.prompt_tokens,
                         num_ctx=backend.max_model_len,
+                        eval_count=usage.completion_tokens,
                     )
         except ComputeError:
             raise

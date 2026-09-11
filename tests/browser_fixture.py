@@ -115,7 +115,7 @@ class FixtureWorker:
                 "answer": "Untreated controls were measured at baseline [1]." if followup else "The recorded response increased after treatment [1]. The repeat measurement agreed [2].",
                 "model": payload["model"],
                 "retrievalPlan": plan,
-                "timings": {"prompt_eval_count": 4096 if followup else 8192, "num_ctx": 32768},
+                "timings": {"prompt_eval_count": 4096 if followup else 8192, "eval_count": 2048 if followup else 4096, "num_ctx": 32768},
                 "citations": [
                     {
                         "notebookId": notebook_id,

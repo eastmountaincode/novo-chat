@@ -683,15 +683,19 @@ function sourceMetrics(hit) {
 
 function renderContextMeter(result) {
   const timings = result?.timings;
-  if (!timings?.prompt_eval_count || !timings?.num_ctx) {
+  if (!timings?.prompt_eval_count || !timings?.num_ctx || !Number.isInteger(timings.eval_count) || timings.eval_count < 0) {
     el.contextMeter.innerHTML = "";
     return;
   }
-  const percent = Math.min(100, (Number(timings.prompt_eval_count) / Number(timings.num_ctx)) * 100);
+  const inputTokens = Number(timings.prompt_eval_count);
+  const outputTokens = timings.eval_count;
+  const usedTokens = inputTokens + outputTokens;
+  const percent = Math.min(100, (usedTokens / Number(timings.num_ctx)) * 100);
+  const breakdown = `${formatInt(inputTokens)} input + ${formatInt(outputTokens)} output (including thinking)`;
   el.contextMeter.innerHTML = `
     <div class="meter-label"><span>Context</span><span>${percent.toFixed(0)}% full</span></div>
-    <div class="meter" role="progressbar" aria-label="Context used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent.toFixed(0)}"><div></div></div>
-    <div class="mono meter-text">${formatInt(timings.prompt_eval_count)} / ${formatInt(timings.num_ctx)} tokens</div>
+    <div class="meter" role="progressbar" aria-label="Context used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent.toFixed(0)}" aria-valuetext="${breakdown}"><div></div></div>
+    <div class="mono meter-text" title="${breakdown}">${formatInt(usedTokens)} / ${formatInt(timings.num_ctx)} tokens</div>
   `;
   el.contextMeter.querySelector(".meter > div").style.width = `${percent}%`;
 }

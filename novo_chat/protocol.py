@@ -504,10 +504,11 @@ class Citation(ProtocolModel):
 
 
 class QueryTimings(ProtocolModel):
-    """Validated context utilization using the original Novo Chat wire keys."""
+    """Actual input/output usage; absent output counts mean unknown, not zero."""
 
     prompt_eval_count: int = Field(alias="prompt_eval_count", ge=1, le=2_000_000, strict=True)
     num_ctx: int = Field(alias="num_ctx", ge=1, le=2_000_000, strict=True)
+    eval_count: int | None = Field(default=None, alias="eval_count", ge=0, le=2_000_000, strict=True)
 
 
 class GenerationResult(ProtocolModel):
