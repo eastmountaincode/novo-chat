@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from novo_chat.gateway.app import create_app
@@ -171,10 +172,6 @@ class SyncWorkerClient:
     async def submit(self, **kwargs: Any) -> dict[str, Any]:
         assert "cookie" not in kwargs and "session" not in kwargs
         self.events.append((kwargs["operation"], kwargs))
-        if kwargs["operation"] == "index_rebuild" and kwargs["idempotency_key"].startswith("sync-"):
-            for row in kwargs["scope"]:
-                self.ready.add((row["notebookId"], row["contentRevision"], row["indexSchemaVersion"]))
-            return self._job("index_rebuild")
         return self._job(kwargs["operation"], "queued")
 
     async def job_status(self, job_id: str) -> dict[str, Any]:
@@ -215,9 +212,12 @@ def csrf_headers(client: TestClient) -> dict[str, str]:
     return {**request_headers(), "x-csrf-token": context["csrfToken"]}
 
 
-def test_ask_auto_synchronizes_missing_exact_index_before_query(tmp_path: Path) -> None:
+@pytest.mark.parametrize("stale", [False, True])
+def test_ask_rejects_missing_or_stale_index_without_preparation(tmp_path: Path, stale: bool) -> None:
     novo = SyncNovoClient()
     worker = SyncWorkerClient()
+    if stale:
+        worker.ready.add(("notebook-a", "sha256:old-revision", "novo-chat-index-v1"))
     app = create_app(settings_for(tmp_path), novo_client=novo, worker_client=worker)
     with TestClient(app) as client:
         response = client.post(
@@ -230,37 +230,75 @@ def test_ask_auto_synchronizes_missing_exact_index_before_query(tmp_path: Path) 
                 "model": "approved-model",
             },
         )
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": "This notebook needs its index rebuilt. Click Rebuild index, then ask again.",
+        "error": {"code": "INDEX_REBUILD_REQUIRED", "retryable": False},
+    }
+    assert [name for name, _payload in worker.events] == ["index_status"]
+    assert novo.export_calls == []
+    assert worker.jobs == {}
+
+
+def test_ask_with_ready_index_only_submits_query(tmp_path: Path) -> None:
+    novo = SyncNovoClient()
+    worker = SyncWorkerClient()
+    worker.ready.add(("notebook-a", "sha256:revision-a", "novo-chat-index-v1"))
+    app = create_app(settings_for(tmp_path), novo_client=novo, worker_client=worker)
+    with TestClient(app) as client:
+        response = client.post(
+            "/chat/api/jobs",
+            headers=csrf_headers(client),
+            json={"operation": "ask", "corpus": "novo:notebook-a", "question": "Hello", "model": "approved-model"},
+        )
     assert response.status_code == 202
     assert response.json()["operation"] == "query"
-    event_names = [name for name, _payload in worker.events]
-    assert event_names == [
-        "index_status",
-        "ingest_batch",
-        "ingest_batch",
-        "ingest_finalize",
-        "index_rebuild",
-        "index_status",
-        "query",
-    ]
-    assert [call["cursor"] for call in novo.export_calls] == [None, "cursor-2"]
-    finalized = next(payload for name, payload in worker.events if name == "ingest_finalize")
-    # Use the exact worker documents to verify the streaming aggregate checksum.
-    documents = [
-        PageDocument.model_validate(
-            {
-                "pageId": page_id,
-                "title": f"Title {page_id}",
-                "text": f"Normalized {page_id}",
-                "tags": ["tag"],
-                "attachments": [],
-                "sourceUrl": f"/?page={page_id}",
-            }
+    assert [name for name, _payload in worker.events] == ["index_status", "query"]
+    assert novo.export_calls == []
+
+
+def test_ask_all_notebooks_requires_every_index_without_partial_query(tmp_path: Path) -> None:
+    novo = SyncNovoClient()
+    novo.current.notebooks.append(novo.current.notebooks[0].model_copy(update={"id": "notebook-b", "name": "Notebook B"}))
+    worker = SyncWorkerClient()
+    worker.ready.add(("notebook-a", "sha256:revision-a", "novo-chat-index-v1"))
+    app = create_app(settings_for(tmp_path), novo_client=novo, worker_client=worker)
+    with TestClient(app) as client:
+        response = client.post(
+            "/chat/api/jobs",
+            headers=csrf_headers(client),
+            json={"operation": "ask", "corpus": "novo:all", "question": "Hello", "model": "approved-model"},
         )
-        for page_id in ("page-a", "page-b")
-    ]
-    assert finalized["document_checksum"] == document_pages_checksum(documents)
-    assert finalized["page_count"] == 2
-    assert finalized["batch_count"] == 2
+    assert response.status_code == 409
+    assert response.json()["detail"].startswith("1 of 2 selected notebooks need their indexes rebuilt.")
+    assert response.json()["error"]["code"] == "INDEX_REBUILD_REQUIRED"
+    assert [name for name, _payload in worker.events] == ["index_status"]
+    assert novo.export_calls == []
+    assert worker.jobs == {}
+
+
+def test_ask_revision_change_does_not_trigger_rebuild(tmp_path: Path) -> None:
+    class ChangingNovo(SyncNovoClient):
+        async def context(self, session_value: str) -> NovoContext:
+            if self.context_calls >= 2:
+                self.current = make_context("sha256:revision-b")
+            return await super().context(session_value)
+
+    novo = ChangingNovo()
+    worker = SyncWorkerClient()
+    worker.ready.add(("notebook-a", "sha256:revision-a", "novo-chat-index-v1"))
+    app = create_app(settings_for(tmp_path), novo_client=novo, worker_client=worker)
+    with TestClient(app) as client:
+        response = client.post(
+            "/chat/api/jobs",
+            headers=csrf_headers(client),
+            json={"operation": "ask", "corpus": "novo:notebook-a", "question": "Hello", "model": "approved-model"},
+        )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "INDEX_REBUILD_REQUIRED"
+    assert [name for name, _payload in worker.events] == ["index_status", "index_status"]
+    assert novo.export_calls == []
+    assert worker.jobs == {}
 
 
 def test_explicit_rebuild_prepares_documents_but_returns_rebuild_job(tmp_path: Path) -> None:
@@ -279,9 +317,15 @@ def test_explicit_rebuild_prepares_documents_but_returns_rebuild_job(tmp_path: P
     assert len(rebuilds) == 1
     assert rebuilds[0]["idempotency_key"] == "browser-request-0001"
     assert worker.jobs[response.json()["jobId"]]["state"] == "queued"
+    assert [call["cursor"] for call in novo.export_calls] == [None, "cursor-2"]
+    finalized = next(payload for name, payload in worker.events if name == "ingest_finalize")
+    documents = [worker_page(exported_page(page_id)) for page_id in ("page-a", "page-b")]
+    assert finalized["document_checksum"] == document_pages_checksum(documents)
+    assert finalized["page_count"] == 2
+    assert finalized["batch_count"] == 2
 
 
-def test_revision_change_reloads_context_and_synchronizes_new_revision(tmp_path: Path) -> None:
+def test_explicit_rebuild_revision_change_synchronizes_new_revision(tmp_path: Path) -> None:
     novo = SyncNovoClient(revision_change_once=True)
     worker = SyncWorkerClient()
     app = create_app(settings_for(tmp_path), novo_client=novo, worker_client=worker)
@@ -290,19 +334,18 @@ def test_revision_change_reloads_context_and_synchronizes_new_revision(tmp_path:
             "/chat/api/jobs",
             headers=csrf_headers(client),
             json={
-                "operation": "ask",
+                "operation": "index_rebuild",
                 "corpus": "novo:notebook-a",
-                "question": "What changed?",
-                "model": "approved-model",
+                "force": True,
             },
         )
     assert response.status_code == 202
-    query = [payload for name, payload in worker.events if name == "query"][-1]
-    assert query["scope"][0]["contentRevision"] == "sha256:revision-b"
+    rebuild = [payload for name, payload in worker.events if name == "index_rebuild"][-1]
+    assert rebuild["scope"][0]["contentRevision"] == "sha256:revision-b"
     assert novo.context_calls >= 3
 
 
-def test_empty_notebook_finalizes_without_an_ingest_batch(tmp_path: Path) -> None:
+def test_explicit_rebuild_empty_notebook_finalizes_without_an_ingest_batch(tmp_path: Path) -> None:
     novo = SyncNovoClient(empty=True)
     worker = SyncWorkerClient()
     app = create_app(settings_for(tmp_path), novo_client=novo, worker_client=worker)
@@ -311,10 +354,9 @@ def test_empty_notebook_finalizes_without_an_ingest_batch(tmp_path: Path) -> Non
             "/chat/api/jobs",
             headers=csrf_headers(client),
             json={
-                "operation": "ask",
+                "operation": "index_rebuild",
                 "corpus": "novo:notebook-a",
-                "question": "Is this empty?",
-                "model": "approved-model",
+                "force": True,
             },
         )
     assert response.status_code == 202

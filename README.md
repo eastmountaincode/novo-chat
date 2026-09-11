@@ -153,8 +153,12 @@ deletes its duplicate ingest batches immediately. Terminal jobs, gateway job
 mappings, active index pointers, finalized documents, and index artifacts use
 the same seven-day maximum active-retention window. Idle worker maintenance
 removes unreferenced storage after a one-hour grace period; separate 50 GiB
-document and index quotas stop short-term accumulation. The next authorized
-request re-exports and rebuilds an expired revision.
+document and index quotas stop short-term accumulation. Re-exporting and
+rebuilding a missing, stale, or expired index requires an explicit **Rebuild
+index** request. Asking a question only checks index readiness; it never exports
+notebooks or rebuilds indexes. If any selected notebook is not ready, the gateway
+returns `409 INDEX_REBUILD_REQUIRED` with instructions to rebuild or select an
+indexed notebook. It does not silently search only the ready subset.
 
 Novo authorization is still checked before every operation and again before a
 result is released. Retention is therefore an at-rest privacy and capacity
