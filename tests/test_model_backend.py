@@ -304,6 +304,7 @@ def test_embedding_generation_and_readiness_use_only_the_fake_session() -> None:
     assert result.model_dump(mode="json", by_alias=True)["timings"] == {
         "prompt_eval_count": 12_345,
         "num_ctx": 262_144,
+        "eval_count": 20,
     }
     assert ready is True
     assert progress_checks == ["checked"]
@@ -702,6 +703,30 @@ def test_generation_without_usage_remains_backward_compatible() -> None:
     assert result.timings is None
 
 
+@pytest.mark.parametrize("completion_tokens", [0, 4096])
+def test_generation_preserves_actual_output_including_reasoning(completion_tokens: int) -> None:
+    session = FakeSession(posts=[FakeResponse({
+        "choices": [{"message": {"content": "Grounded answer [1]"}}],
+        "usage": {
+            "prompt_tokens": 8192,
+            "completion_tokens": completion_tokens,
+            "total_tokens": 8192 + completion_tokens,
+            "completion_tokens_details": {"reasoning_tokens": min(3000, completion_tokens)},
+        },
+    })])
+    configuration = valid_config()
+    configuration["models"]["model:a"].update(maxTokens=32768, maxModelLen=65536)
+    backend = HttpModelBackend(ModelBackendDocument.model_validate(configuration), session=session)
+
+    result = backend.generate("Question", [{"source_idx": 1, "text": "source"}], model="model:a", max_sources=1)
+
+    assert result.timings is not None
+    assert result.timings.prompt_eval_count == 8192
+    # Reasoning is already included in completion_tokens, not added again.
+    assert result.timings.eval_count == completion_tokens
+    assert session.post_calls[0]["json"]["max_tokens"] == 32768
+
+
 def test_generation_backs_off_output_tokens_for_validated_context_overflow() -> None:
     session = FakeSession(
         posts=[
@@ -745,6 +770,7 @@ def test_generation_backs_off_output_tokens_for_validated_context_overflow() -> 
     assert [call["json"]["max_tokens"] for call in session.post_calls] == [2048, 1024]
     assert result.timings is not None
     assert result.timings.prompt_eval_count == 14_337
+    assert result.timings.eval_count is None
 
 
 def test_generation_rejects_unvalidated_or_unusable_context_budget() -> None:
@@ -824,6 +850,11 @@ def test_generation_rejects_unvalidated_or_unusable_context_budget() -> None:
         {"prompt_tokens": 12.5},
         {"prompt_tokens": "123"},
         {"prompt_tokens": 2_000_001},
+        {"prompt_tokens": 123, "completion_tokens": -1},
+        {"prompt_tokens": 123, "completion_tokens": True},
+        {"prompt_tokens": 123, "completion_tokens": "20"},
+        {"prompt_tokens": 123, "completion_tokens": 1.5},
+        {"prompt_tokens": 123, "completion_tokens": 2_000_001},
     ],
 )
 def test_generation_rejects_malformed_vllm_usage(usage: Any) -> None:

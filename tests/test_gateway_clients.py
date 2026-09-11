@@ -278,7 +278,7 @@ def test_worker_client_signs_exact_typed_body_and_has_no_cookie_channel(tmp_path
                     answer="Answer",
                     model="approved-model",
                     citations=(),
-                    timings=QueryTimings(prompt_eval_count=12_345, num_ctx=262_144),
+                    timings=QueryTimings(prompt_eval_count=12_345, num_ctx=262_144, eval_count=345),
                 ),
             ),
         )
@@ -329,6 +329,7 @@ def test_worker_client_signs_exact_typed_body_and_has_no_cookie_channel(tmp_path
             assert result["job"]["result"]["timings"] == {
                 "prompt_eval_count": 12_345,
                 "num_ctx": 262_144,
+                "eval_count": 345,
             }
             assert result["job"]["progressDetail"] == {
                 "stage": "answering",
