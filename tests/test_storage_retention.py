@@ -19,8 +19,11 @@ from novo_chat.protocol import (
 
 
 class RetentionBackend:
-    def embed_documents(self, texts, *, scope):
+    def embed_documents(self, texts, *, scope, progress_callback=None):
         del scope
+        if progress_callback is not None:
+            for completed in range(1, len(texts) + 1):
+                progress_callback(completed, len(texts))
         return np.ones((len(texts), 2), dtype=np.float32)
 
     def embed_query(self, text):

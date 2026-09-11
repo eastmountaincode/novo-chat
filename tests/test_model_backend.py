@@ -268,7 +268,12 @@ def test_embedding_generation_and_readiness_use_only_the_fake_session() -> None:
         index_schema_version="novo-chat-index-v1",
     )
 
-    vectors = backend.embed_documents(["a" * 140, "second"], scope=scope)
+    embedding_progress = []
+    vectors = backend.embed_documents(
+        ["a" * 140, "second"],
+        scope=scope,
+        progress_callback=lambda completed, total: embedding_progress.append((completed, total)),
+    )
     query = backend.embed_query("find this")
     hits = [
         {
@@ -292,6 +297,7 @@ def test_embedding_generation_and_readiness_use_only_the_fake_session() -> None:
 
     assert session.trust_env is False
     assert vectors.dtype == np.float32
+    assert embedding_progress == [(1, 2), (2, 2)]
     np.testing.assert_array_equal(vectors, np.asarray([[3.0, 4.0], [0.0, 5.0]], dtype=np.float32))
     np.testing.assert_array_equal(query, np.asarray([8.0, 6.0], dtype=np.float32))
     assert result.answer == "Grounded answer [1]"
