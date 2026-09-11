@@ -24,8 +24,8 @@ class PlannerBackend:
         self.generated_hits: list[dict[str, Any]] = []
         self.embedded_queries: list[str] = []
 
-    def embed_documents(self, texts: Sequence[str], *, scope: NotebookScope) -> np.ndarray:
-        del texts, scope
+    def embed_documents(self, texts: Sequence[str], *, scope: NotebookScope, progress_callback=None) -> np.ndarray:
+        del texts, scope, progress_callback
         raise AssertionError("documents are not embedded in these tests")
 
     def embed_query(self, text: str) -> np.ndarray:

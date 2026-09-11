@@ -49,14 +49,19 @@ class FakeBackend:
             dtype=np.float32,
         )
 
-    def embed_documents(self, texts: Sequence[str], *, scope: NotebookScope) -> np.ndarray:
+    def embed_documents(self, texts: Sequence[str], *, scope: NotebookScope, progress_callback=None) -> np.ndarray:
         if scope.content_revision in self.fail_revisions:
             raise RuntimeError("test-only embedding failure")
         if not texts:
             # Intentionally differs from populated artifacts' width; mixed
             # empty/nonempty queries must ignore this zero-row dimension.
             return np.empty((0, 9), dtype=np.float32)
-        return np.vstack([self.vector(text) for text in texts])
+        vectors = []
+        for completed, text in enumerate(texts, start=1):
+            vectors.append(self.vector(text))
+            if progress_callback is not None:
+                progress_callback(completed, len(texts))
+        return np.vstack(vectors)
 
     def embed_query(self, text: str) -> np.ndarray:
         return self.vector(text)
@@ -272,6 +277,26 @@ class WorkerExecutionTests(unittest.TestCase):
         )
         self.assertEqual({row["notebookId"] for row in completed.result["citations"]}, {alpha.notebook_id})
         self.assertEqual({row["notebook_id"] for row in self.backend.last_hits}, {alpha.notebook_id})
+
+    def test_rebuild_reports_monotonic_progress_during_embedding(self):
+        notebook = self.scope("notebook-progress", "rev-progress")
+        pages = tuple(self.page(f"page-{position}", f"alpha result {position}") for position in range(4))
+        self.ingest_and_finalize(notebook, pages)
+        outcome = self.submit(JobOperation.INDEX_REBUILD, (notebook,), {"force": False})
+        updates: list[float] = []
+        original_set_progress = self.store.set_progress
+
+        def record_progress(operation_id, progress, **kwargs):
+            updates.append(float(progress))
+            return original_set_progress(operation_id, progress, **kwargs)
+
+        with patch.object(self.store, "set_progress", side_effect=record_progress):
+            completed = self.execute(outcome)
+
+        self.assertEqual(completed.state, JobState.SUCCEEDED)
+        self.assertGreaterEqual(len([value for value in updates if 0.05 < value < 0.90]), 4)
+        self.assertEqual(updates, sorted(updates))
+        self.assertGreaterEqual(updates[-1], 0.99)
 
     def test_query_returns_ranked_hits_beyond_the_prompt_context(self):
         scope = self.scope("notebook-ranked", "rev-ranked")

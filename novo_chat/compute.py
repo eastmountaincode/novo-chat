@@ -53,7 +53,13 @@ class ComputeError(Exception):
 
 
 class ComputeBackend(Protocol):
-    def embed_documents(self, texts: Sequence[str], *, scope: NotebookScope) -> np.ndarray:
+    def embed_documents(
+        self,
+        texts: Sequence[str],
+        *,
+        scope: NotebookScope,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> np.ndarray:
         ...
 
     def embed_query(self, text: str) -> np.ndarray:
@@ -201,18 +207,34 @@ class IndexRepository:
     def healthy(self) -> bool:
         return self.root.is_dir() and os.access(self.root, os.R_OK | os.W_OK | os.X_OK)
 
-    def build_candidate(self, document: FinalizedDocument, *, operation_id: str) -> IndexCandidate:
+    def build_candidate(
+        self,
+        document: FinalizedDocument,
+        *,
+        operation_id: str,
+        progress_callback: Callable[[float], None] | None = None,
+    ) -> IndexCandidate:
         import hashlib
         import uuid
 
         chunks = _chunks_for_pages(document.scope, document.pages)
+        if progress_callback is not None:
+            progress_callback(0.05)
+
+        def report_embedding_progress(completed: int, total: int) -> None:
+            if progress_callback is not None:
+                progress_callback(0.05 + 0.80 * completed / max(1, total))
+
         vectors = _normalize_vectors(
             self.backend.embed_documents(
                 [str(chunk["indexed_text"]) for chunk in chunks],
                 scope=document.scope,
+                progress_callback=report_embedding_progress,
             ),
             len(chunks),
         )
+        if progress_callback is not None:
+            progress_callback(0.88)
         artifact_id = hashlib.sha256(
             canonical_json(
                 {
@@ -247,8 +269,12 @@ class IndexRepository:
                     "createdAt": int(time.time()),
                 },
             )
+            if progress_callback is not None:
+                progress_callback(0.96)
             self._load_path(candidate_path, expected_scope=document.scope, expected_artifact_id=artifact_id)
             self._bytes_used += self._tree_size(candidate_path)
+            if progress_callback is not None:
+                progress_callback(1.0)
             return IndexCandidate(
                 scope=document.scope,
                 artifact_id=artifact_id,

@@ -210,20 +210,43 @@ class WorkerExecutor:
 
     def _rebuild(self, operation: StoredOperation) -> Mapping[str, Any]:
         candidates = []
+        scope_count = max(1, len(operation.scope))
+        last_progress = 0.0
+
+        def report_progress(value: float) -> None:
+            nonlocal last_progress
+            bounded = min(0.90, max(last_progress, float(value)))
+            if bounded < 0.90 and bounded - last_progress < 0.01:
+                return
+            last_progress = bounded
+            self.job_store.set_progress(
+                operation.operation_id,
+                bounded,
+                now=self.clock(),
+            )
+
+        report_progress(0.02)
         try:
             for position, scope in enumerate(operation.scope):
                 document = self.document_store.load(scope)
+
+                def report_candidate_progress(value: float, *, completed_scopes: int = position) -> None:
+                    report_progress(0.90 * (completed_scopes + value) / scope_count)
+
                 candidate = self.index_repository.build_candidate(
                     document,
                     operation_id=operation.operation_id,
+                    progress_callback=report_candidate_progress,
                 )
                 candidates.append(candidate)
+            committed = []
+            for position, candidate in enumerate(candidates):
+                committed.append(self.index_repository.commit_candidate(candidate))
                 self.job_store.set_progress(
                     operation.operation_id,
-                    0.8 * (position + 1) / max(1, len(operation.scope)),
+                    0.90 + 0.09 * (position + 1) / scope_count,
                     now=self.clock(),
                 )
-            committed = [self.index_repository.commit_candidate(candidate) for candidate in candidates]
             self.job_store.activate_indexes(
                 [(entry.scope, entry.artifact_id) for entry in committed],
                 environment=self.environment,

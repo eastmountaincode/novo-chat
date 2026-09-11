@@ -309,11 +309,23 @@ class HttpModelBackend:
             for model_id, backend in self.config.models.items()
         }
 
-    def embed_documents(self, texts: Sequence[str], *, scope: NotebookScope) -> np.ndarray:
+    def embed_documents(
+        self,
+        texts: Sequence[str],
+        *,
+        scope: NotebookScope,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> np.ndarray:
         del scope
         if not texts:
             return np.empty((0, 0), dtype=np.float32)
-        return np.vstack([self._embed(text, kind="document") for text in texts]).astype(np.float32)
+        vectors = []
+        total = len(texts)
+        for completed, text in enumerate(texts, start=1):
+            vectors.append(self._embed(text, kind="document"))
+            if progress_callback is not None:
+                progress_callback(completed, total)
+        return np.vstack(vectors).astype(np.float32)
 
     def embed_query(self, text: str) -> np.ndarray:
         return self._embed(text, kind="query")
@@ -558,8 +570,14 @@ class HttpModelBackend:
 class UnavailableModelBackend:
     """Fail-closed default for tests or an intentionally unconfigured worker."""
 
-    def embed_documents(self, texts: Sequence[str], *, scope: NotebookScope) -> np.ndarray:
-        del scope
+    def embed_documents(
+        self,
+        texts: Sequence[str],
+        *,
+        scope: NotebookScope,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> np.ndarray:
+        del scope, progress_callback
         if not texts:
             return np.empty((0, 0), dtype=np.float32)
         raise ComputeError("MODEL_BACKEND_UNAVAILABLE", "Model backend is unavailable.", retryable=True)
