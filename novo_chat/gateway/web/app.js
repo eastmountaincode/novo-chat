@@ -317,7 +317,11 @@ function renderRuntime() {
         ${squareIcon()}<span>${visibleRuntimeAction === "stop" ? "Stopping..." : "Stop"}</span>
       </button>
     </div>
-    ${visibleRuntimeAction ? renderProgress(visibleRuntimeAction === "start" ? "Starting model" : "Stopping model", state.runtimeProgress) : ""}
+    ${visibleRuntimeAction ? renderProgress(
+      visibleRuntimeAction === "start" ? "Starting model" : "Stopping model",
+      state.runtimeProgress,
+      { indeterminate: visibleRuntimeAction === "start" && progressPercent(state.runtimeProgress) === 0 },
+    ) : ""}
   `;
   applyProgressWidths(el.runtime);
   document.getElementById("startModelBtn")?.addEventListener("click", () => void controlRuntime("start"));
@@ -351,13 +355,15 @@ function specRow(label, value) {
   return `<div class="spec-row"><span>${escapeHtml(label)}</span><span class="mono">${escapeHtml(value)}</span></div>`;
 }
 
-function renderProgress(label, progress) {
+function renderProgress(label, progress, { indeterminate = false } = {}) {
   const percent = progressPercent(progress);
+  const progressValue = indeterminate ? "" : ` aria-valuenow="${percent.toFixed(0)}"`;
+  const progressClass = indeterminate ? "progress-bar indeterminate" : "progress-bar";
   return `
     <div class="progress-block">
-      <div class="progress-line"><span>${escapeHtml(progress?.message || label)}</span><span class="mono">${percent.toFixed(0)}%</span></div>
-      <div class="progress-bar" role="progressbar" aria-label="${escapeHtml(label)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent.toFixed(0)}">
-        <div data-progress-fill="${percent.toFixed(0)}"></div>
+      <div class="progress-line"><span>${escapeHtml(progress?.message || label)}</span><span class="mono">${indeterminate ? "" : `${percent.toFixed(0)}%`}</span></div>
+      <div class="${progressClass}" role="progressbar" aria-label="${escapeHtml(label)}" aria-valuemin="0" aria-valuemax="100"${progressValue}>
+        <div${indeterminate ? "" : ` data-progress-fill="${percent.toFixed(0)}"`}></div>
       </div>
     </div>
   `;

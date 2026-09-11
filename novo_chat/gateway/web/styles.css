@@ -241,6 +241,22 @@ a {
   background: #000;
 }
 
+.progress-bar.indeterminate {
+  position: relative;
+  overflow: hidden;
+}
+
+.progress-bar.indeterminate > div {
+  position: absolute;
+  width: 28%;
+  animation: startup-progress 1.1s ease-in-out infinite;
+}
+
+@keyframes startup-progress {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(360%); }
+}
+
 .progress-native,
 .context-progress {
   display: block;
