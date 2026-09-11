@@ -295,24 +295,12 @@ function renderContextControl() {
 function renderRuntime() {
   const status = state.modelStatus[state.model];
   const current = modelState(status);
-  const labels = {
-    ready: "Running",
-    running: "Running",
-    starting: "Starting...",
-    draining: "Draining...",
-    stopping: "Stopping...",
-    stopped: "Stopped",
-    failed: "Model failed",
-    unavailable: "Model unavailable",
-    unknown: "Checking runtime status...",
-  };
   const computeAvailable = state.context?.worker?.available === true;
   const controlsLocked = state.busy || !computeAvailable || state.runtimeAction !== null;
   const canStart = Boolean(state.model) && !controlsLocked && current !== "stopping" && !modelMayBeRunning(status);
   const canStop = Boolean(state.model) && !controlsLocked && current !== "stopping" && modelMayBeRunning(status);
   const visibleRuntimeAction = state.runtimeModel === state.model ? state.runtimeAction : null;
   el.runtime.innerHTML = `
-    <div class="runtime-status">${escapeHtml(state.model ? labels[current] || "Checking runtime status..." : "No approved models reported")}</div>
     <div class="runtime-actions">
       <button id="startModelBtn" type="button" ${canStart ? "" : "disabled"}>
         ${playIcon()}<span>${visibleRuntimeAction === "start" ? "Starting..." : "Start"}</span>

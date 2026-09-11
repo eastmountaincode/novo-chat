@@ -652,11 +652,23 @@ def test_public_job_poll_preserves_safe_structured_retryability(gateway) -> None
 
 def test_model_state_ui_distinguishes_transitions_and_failures() -> None:
     javascript = (Path(__file__).parents[1] / "novo_chat/gateway/web/app.js").read_text(encoding="utf-8")
-    assert 'starting: "Starting..."' in javascript
-    assert 'draining: "Draining..."' in javascript
-    assert 'failed: "Model failed"' in javascript
-    assert 'stopping: "Stopping..."' in javascript
-    assert 'unavailable: "Model unavailable"' in javascript
+    assert '`${model} (${modelOptionState(state.modelStatus[model])})`' in javascript
+    assert '["starting", "draining", "stopping", "failed", "unavailable"].includes(current)' in javascript
+
+
+def test_model_controls_omit_duplicate_status_but_keep_startup_progress() -> None:
+    web_directory = Path(__file__).parents[1] / "novo_chat/gateway/web"
+    javascript = (web_directory / "app.js").read_text(encoding="utf-8")
+    css = (web_directory / "styles.css").read_text(encoding="utf-8")
+    runtime = javascript.split("function renderRuntime() {", 1)[1].split("function renderModelSpecs()", 1)[0]
+
+    assert "runtime-status" not in javascript
+    assert ".runtime-status" not in css
+    assert 'id="startModelBtn"' in runtime
+    assert 'id="stopModelBtn"' in runtime
+    assert 'visibleRuntimeAction ? renderProgress(' in runtime
+    assert 'visibleRuntimeAction === "start" ? "Starting model" : "Stopping model"' in runtime
+    assert 'state.runtimeProgress' in runtime
 
 
 def test_gateway_ui_preserves_aorus_layout_and_ranked_retrieval_contract() -> None:
