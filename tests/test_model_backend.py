@@ -366,7 +366,9 @@ def test_query_planner_uses_a_small_structured_call_and_preserves_original_quest
             )
         ]
     )
-    backend = HttpModelBackend(ModelBackendDocument.model_validate(valid_config()), session=session)
+    configuration = valid_config()
+    configuration["models"]["model:a"]["chatTemplateKwargs"]["enable_thinking"] = True
+    backend = HttpModelBackend(ModelBackendDocument.model_validate(configuration), session=session)
 
     plan = backend.plan_query(
         "What is Defne having trouble with?",
