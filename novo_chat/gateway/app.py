@@ -36,7 +36,7 @@ from .novo_client import (
 from .secrets import FileSecret
 from .security import csrf_token, login_url, require_same_origin_json_csrf
 from .store import JobOwnershipStore, OwnedJob
-from .sync import ExportLimitExceeded, GatewaySynchronizer, SynchronizationError, SynchronizationTimeout
+from .sync import ExportLimitExceeded, GatewaySynchronizer, IndexesNotReady, SynchronizationError, SynchronizationTimeout
 from .worker_client import (
     GatewayWorkerClient,
     WorkerRejected,
@@ -213,6 +213,16 @@ def create_app(
                 "error": {"code": exc.code, "retryable": exc.retryable},
             },
             status_code=exc.status_code,
+        )
+
+    @chat.exception_handler(IndexesNotReady)
+    async def indexes_not_ready_handler(_request: Request, exc: IndexesNotReady) -> JSONResponse:
+        return JSONResponse(
+            {
+                "detail": str(exc),
+                "error": {"code": "INDEX_REBUILD_REQUIRED", "retryable": False},
+            },
+            status_code=status.HTTP_409_CONFLICT,
         )
 
     @chat.exception_handler(SynchronizationTimeout)
@@ -634,8 +644,7 @@ async def synchronized_scope(
         scope = resolve_scope(context, submitted, settings.index_schema_version)
         try:
             if submitted.operation is GatewayOperation.ASK:
-                await synchronizer.ensure_indexes_ready(
-                    session_value=session_value,
+                await synchronizer.require_indexes_ready(
                     actor_user_id=context.user.id,
                     scope=scope,
                 )

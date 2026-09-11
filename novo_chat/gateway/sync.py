@@ -24,6 +24,18 @@ class ExportLimitExceeded(SynchronizationError):
     pass
 
 
+class IndexesNotReady(SynchronizationError):
+    def __init__(self, missing_count: int, total_count: int) -> None:
+        if total_count == 1:
+            message = "This notebook needs its index rebuilt. Click Rebuild index, then ask again."
+        else:
+            message = (
+                f"{missing_count} of {total_count} selected notebooks need their indexes rebuilt. "
+                "Click Rebuild index, or select a notebook with a ready index."
+            )
+        super().__init__(message)
+
+
 @dataclass(frozen=True, slots=True)
 class ExportSummary:
     notebook_id: str
@@ -82,36 +94,17 @@ class GatewaySynchronizer:
         except TimeoutError as exc:
             raise SynchronizationTimeout("Notebook preparation timed out. Try again.") from exc
 
-    async def ensure_indexes_ready(
+    async def require_indexes_ready(
         self,
         *,
-        session_value: str,
         actor_user_id: str,
         scope: list[dict[str, str]],
     ) -> None:
-        """Synchronize, rebuild, and verify every exact scope entry."""
+        """Check exact indexes without exporting documents or scheduling work."""
 
-        try:
-            async with asyncio.timeout(self.settings.worker_job_timeout_s):
-                missing = await self._missing_scope(actor_user_id, scope)
-                if not missing:
-                    return
-                for entry in missing:
-                    await self._export_and_ingest(session_value, actor_user_id, entry)
-                rebuild = await self.worker_client.submit(
-                    operation="index_rebuild",
-                    request_id=new_request_id(),
-                    idempotency_key=_idempotency_key("auto-rebuild", missing),
-                    actor_user_id=actor_user_id,
-                    scope=missing,
-                    payload={"force": False},
-                )
-                await self._wait_for_job(rebuild, expected_operation="index_rebuild")
-                still_missing = await self._missing_scope(actor_user_id, scope)
-                if still_missing:
-                    raise SynchronizationError("The compute worker did not activate the requested notebook index")
-        except TimeoutError as exc:
-            raise SynchronizationTimeout("Notebook preparation timed out. Try again.") from exc
+        missing = await self._missing_scope(actor_user_id, scope)
+        if missing:
+            raise IndexesNotReady(len(missing), len(scope))
 
     async def _missing_scope(
         self,
