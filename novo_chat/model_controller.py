@@ -8,10 +8,11 @@ images, arguments, ports, or filesystem paths.
 from __future__ import annotations
 
 import json
+import math
 import os
 import socket
 from pathlib import Path
-from typing import Any, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol
 
 from .protocol import ModelRuntimeState
 
@@ -49,7 +50,13 @@ class ModelReadinessProbe(Protocol):
     def is_ready(self, model: str) -> bool:
         ...
 
-    def wait_until_ready(self, model: str, *, timeout_seconds: float) -> bool:
+    def wait_until_ready(
+        self,
+        model: str,
+        *,
+        timeout_seconds: float,
+        progress_callback: Callable[[], None] | None = None,
+    ) -> bool:
         ...
 
 
@@ -60,8 +67,14 @@ class UnavailableModelReadinessProbe:
         del model
         return False
 
-    def wait_until_ready(self, model: str, *, timeout_seconds: float) -> bool:
-        del model, timeout_seconds
+    def wait_until_ready(
+        self,
+        model: str,
+        *,
+        timeout_seconds: float,
+        progress_callback: Callable[[], None] | None = None,
+    ) -> bool:
+        del model, timeout_seconds, progress_callback
         return False
 
 
@@ -212,7 +225,24 @@ class UnixSocketModelController:
                 "MODEL_CONTROLLER_RESPONSE_INVALID",
                 "Model controller returned an invalid response.",
             )
-        return {"state": state, "changed": bool(status.get("changed", False))}
+        safe_status: dict[str, Any] = {
+            "state": state,
+            "changed": bool(status.get("changed", False)),
+        }
+        if "progress" in status:
+            progress = status["progress"]
+            if (
+                isinstance(progress, bool)
+                or not isinstance(progress, (int, float))
+                or not math.isfinite(float(progress))
+                or not 0.0 <= float(progress) <= 1.0
+            ):
+                raise ModelControllerError(
+                    "MODEL_CONTROLLER_RESPONSE_INVALID",
+                    "Model controller returned an invalid response.",
+                )
+            safe_status["progress"] = float(progress)
+        return safe_status
 
 
 __all__ = [

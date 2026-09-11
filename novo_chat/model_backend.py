@@ -7,7 +7,7 @@ import json
 import re
 import time
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import urlsplit
 
 import numpy as np
@@ -538,11 +538,19 @@ class HttpModelBackend:
         except requests.RequestException:
             return False
 
-    def wait_until_ready(self, model: str, *, timeout_seconds: float) -> bool:
+    def wait_until_ready(
+        self,
+        model: str,
+        *,
+        timeout_seconds: float,
+        progress_callback: Callable[[], None] | None = None,
+    ) -> bool:
         deadline = time.monotonic() + max(0.0, float(timeout_seconds))
         while time.monotonic() < deadline:
             if self.is_ready(model):
                 return True
+            if progress_callback is not None:
+                progress_callback()
             time.sleep(min(2.0, max(0.0, deadline - time.monotonic())))
         return self.is_ready(model)
 
@@ -585,8 +593,14 @@ class UnavailableModelBackend:
         del model
         return False
 
-    def wait_until_ready(self, model: str, *, timeout_seconds: float) -> bool:
-        del model, timeout_seconds
+    def wait_until_ready(
+        self,
+        model: str,
+        *,
+        timeout_seconds: float,
+        progress_callback: Callable[[], None] | None = None,
+    ) -> bool:
+        del model, timeout_seconds, progress_callback
         return False
 
 

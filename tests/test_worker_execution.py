@@ -7,6 +7,7 @@ import threading
 import unittest
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+from unittest.mock import patch
 from uuid import uuid4
 
 import numpy as np
@@ -83,12 +84,22 @@ class FakeReadiness:
     def __init__(self, ready: bool = True) -> None:
         self.ready = ready
         self.waits: list[tuple[str, float]] = []
+        self.progress_polls = 0
 
     def is_ready(self, model: str) -> bool:
         return self.ready
 
-    def wait_until_ready(self, model: str, *, timeout_seconds: float) -> bool:
+    def wait_until_ready(
+        self,
+        model: str,
+        *,
+        timeout_seconds: float,
+        progress_callback=None,
+    ) -> bool:
         self.waits.append((model, timeout_seconds))
+        for _ in range(self.progress_polls):
+            if progress_callback is not None:
+                progress_callback()
         return self.ready
 
 
@@ -96,10 +107,15 @@ class RecordingController:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, str, str]] = []
         self.states: dict[str, str] = {}
+        self.progresses: dict[str, list[float]] = {}
 
     def status(self, model: str, *, request_id: str, actor_user_id: str):
         self.calls.append(("status", model, request_id, actor_user_id))
-        return {"state": self.states.get(model, "stopped")}
+        status = {"state": self.states.get(model, "stopped")}
+        values = self.progresses.get(model, [])
+        if values:
+            status["progress"] = values.pop(0)
+        return status
 
     def start(self, model: str, *, request_id: str, actor_user_id: str):
         self.calls.append(("start", model, request_id, actor_user_id))
@@ -522,6 +538,20 @@ class WorkerExecutionTests(unittest.TestCase):
         self.assertEqual(failed.error_code, "MODEL_READINESS_TIMEOUT")
         self.assertTrue(failed.retryable)
 
+    def test_model_start_persists_each_controller_checkpoint_percentage(self):
+        self.readiness.progress_polls = 4
+        self.controller.progresses["model:a"] = [0.03, 0.49, 1.0, 0.98]
+        start = self.submit(JobOperation.MODEL_START, (), {"model": "model:a"})
+
+        with patch.object(self.store, "set_progress", wraps=self.store.set_progress) as updates:
+            completed = self.execute(start)
+
+        self.assertEqual(completed.state, JobState.SUCCEEDED)
+        self.assertEqual(
+            [call.args[1] for call in updates.call_args_list],
+            [0.03, 0.49, 1.0],
+        )
+
     def test_starting_second_model_stops_running_approved_model_first(self):
         self.controller.states["model:a"] = "running"
         switching_executor = WorkerExecutor(
@@ -600,7 +630,7 @@ class UnixSocketControllerClientTests(unittest.TestCase):
                         "requestId": captured["requestId"],
                         "model": captured["model"],
                         "action": captured["action"],
-                        "status": {"state": "running", "changed": True},
+                        "status": {"state": "running", "changed": True, "progress": 0.49},
                         "statusCode": 200,
                     }
                     connection.sendall(json.dumps(response).encode() + b"\n")
@@ -612,7 +642,7 @@ class UnixSocketControllerClientTests(unittest.TestCase):
             client = UnixSocketModelController(path, timeout_seconds=2)
             status = client.start("model:a", request_id=request_id, actor_user_id="user-a")
             thread.join(timeout=2)
-            self.assertEqual(status, {"state": "running", "changed": True})
+            self.assertEqual(status, {"state": "running", "changed": True, "progress": 0.49})
             self.assertEqual(
                 captured,
                 {

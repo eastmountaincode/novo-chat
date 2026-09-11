@@ -282,8 +282,13 @@ def test_embedding_generation_and_readiness_use_only_the_fake_session() -> None:
         }
     ]
     result = backend.generate("What happened?", hits, model="model:a", max_sources=1)
+    progress_checks = []
     with patch("novo_chat.model_backend.time.sleep", return_value=None):
-        ready = backend.wait_until_ready("model:a", timeout_seconds=1)
+        ready = backend.wait_until_ready(
+            "model:a",
+            timeout_seconds=1,
+            progress_callback=lambda: progress_checks.append("checked"),
+        )
 
     assert session.trust_env is False
     assert vectors.dtype == np.float32
@@ -295,6 +300,7 @@ def test_embedding_generation_and_readiness_use_only_the_fake_session() -> None:
         "num_ctx": 262_144,
     }
     assert ready is True
+    assert progress_checks == ["checked"]
     assert backend.is_ready("unknown-model") is False
 
     first_embedding = session.post_calls[0]

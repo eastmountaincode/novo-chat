@@ -376,6 +376,14 @@ function progressPercent(progress) {
   return Math.max(0, Math.min(100, numeric >= 0 && numeric <= 1 ? numeric * 100 : numeric));
 }
 
+function modelProgressMessage(action, progress) {
+  if (action !== "start") return "Stopping model";
+  const percent = progressPercent(progress);
+  if (percent >= 100) return "Finalizing model";
+  if (percent > 0) return "Loading model weights";
+  return "Starting model";
+}
+
 function renderSearchDetails(plan, { open = false } = {}) {
   if (!plan || typeof plan !== "object") return "";
   const original = String(plan.originalQuestion || plan.original_question || "");
@@ -511,7 +519,10 @@ async function submitAndWait(payload, kind, messageNode = null) {
   if (kind === "model") {
     state.runtimeAction = payload.operation === "model_start" ? "start" : "stop";
     state.runtimeModel = targetModel;
-    state.runtimeProgress = { percent: 0, message: state.runtimeAction === "start" ? "Starting model" : "Stopping model" };
+    state.runtimeProgress = {
+      percent: 0,
+      message: modelProgressMessage(state.runtimeAction, 0),
+    };
   }
   render();
   try {
@@ -528,7 +539,7 @@ async function submitAndWait(payload, kind, messageNode = null) {
       } else if (kind === "model") {
         state.runtimeProgress = {
           percent: progress,
-          message: state.runtimeAction === "start" ? "Starting model" : "Stopping model",
+          message: modelProgressMessage(state.runtimeAction, progress),
         };
         if (state.model === targetModel) renderRuntime();
       } else if (messageNode) {
