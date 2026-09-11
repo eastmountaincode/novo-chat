@@ -669,7 +669,7 @@ def test_gateway_ui_preserves_aorus_layout_and_ranked_retrieval_contract() -> No
     assert "<span>Context chunks</span>" in html
     assert 'id="maxSources" type="range" min="1" max="16" value="12"' in html
     assert '<output id="maxSourcesValue" class="mono slider-value">12</output>' in html
-    assert "<h2>Sources</h2>" in html
+    assert "<h2>Retrieved</h2>" in html
     assert 'placeholder="Ask a question..."' in html
     assert "Access checked live by Novo" not in html
     assert 'id="accessSource"' not in html
@@ -683,12 +683,13 @@ def test_gateway_ui_preserves_aorus_layout_and_ranked_retrieval_contract() -> No
     assert ".source summary:focus" in css
     assert ".search-details" in css
 
-    assert 'addMessage("assistant", "Preparing search…")' in javascript
+    assert 'addMessage("assistant", "thinking...")' in javascript
     assert 'addMessage("assistant", "Start a model before asking.")' in javascript
     assert "el.userName.textContent = label;" in javascript
     assert "user?.role" not in javascript
     assert "accessSource" not in javascript
     assert "retrieval_top_k: state.retrievalTopK" in javascript
+    assert "Answering from ${count} selected context chunk" in javascript
     assert "maxSources: 12," in javascript
     assert "maxSourcesMax: 16," in javascript
     assert "retrievalTopK: 16," in javascript
@@ -709,20 +710,27 @@ def test_gateway_ui_preserves_aorus_layout_and_ranked_retrieval_contract() -> No
     assert "source.open = true" in javascript
     assert 'source.scrollIntoView({ behavior: "smooth", block: "nearest" })' in javascript
     assert 'source.querySelector("summary")?.focus({ preventScroll: true })' in javascript
-    assert 'href="#${citationPrefix}-${n.trim()}">${n.trim()}</a>' in javascript
+    assert 'href="#source-${n.trim()}">${n.trim()}</a>' in javascript
     assert 'class="index-state"' in javascript
+    assert 'class="settings-details"' in javascript
     assert '`${needsRebuild} of ${rows.length} need rebuild`' in javascript
     assert 'aggregate ? "latest rebuild" : "last rebuilt"' in javascript
     assert '"partially ready"' not in javascript
     assert '"live Novo"' not in javascript
     assert '["total VRAM", totalVramGb != null && Number.isFinite(Number(totalVramGb))' in javascript
-    assert '"Preparing search…"' in javascript
-    assert '"Searching notes…"' in javascript
-    assert '"Writing answer…"' in javascript
+    assert '"Planning search…"' in javascript
+    assert '"Searching indexed notes…"' in javascript
+    assert "selected context chunk" in javascript
     assert "renderSearchDetails(plan, { open: true })" not in javascript
-    assert "Related wording" in javascript
-    assert "Additional keywords" in javascript
-    assert "Searched using your question without additional terms." in javascript
+    assert "body.append(disclosure)" in javascript
+    assert "sourceQuestion" not in html + javascript
+    assert "answer-sources" not in javascript + css
+    assert "source-page" not in javascript + css
+    assert 'if (state.selectedAnswer !== node) selectAnswer(node)' in javascript
+    assert "Semantic expansion" in javascript
+    assert "BM25 expansion" in javascript
+    assert "No additional expansion was generated." in javascript
+    assert "escapeHtml(original)" in javascript
     assert "escapeHtml(semantic)" in javascript
     assert "escapeHtml(term)" in javascript
     assert 'style="' not in javascript

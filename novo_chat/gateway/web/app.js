@@ -23,7 +23,6 @@ const state = {
   maxSourcesMax: 16,
   retrievalTopK: 16,
   questionHistory: [],
-  answerCounter: 0,
   selectedAnswer: null,
 };
 let messageData = new WeakMap();
@@ -34,7 +33,7 @@ const el = Object.fromEntries([
   "corpus", "indexPanel", "indexBtn", "maxSources", "maxSourcesValue", "model", "runtime",
   "modelSpecs", "clearBtn", "userName", "novoLink", "computeBanner",
   "computeDetail", "retryButton", "activeCorpus", "activeModel", "messages", "askForm",
-  "question", "askBtn", "contextMeter", "sources", "sourceQuestion",
+  "question", "askBtn", "contextMeter", "sources",
 ].map((id) => [id, document.getElementById(id)]));
 
 function apiPath(segment) {
@@ -404,6 +403,7 @@ function renderSearchDetails(plan, { open = false } = {}) {
   const terms = Array.isArray(rawTerms) ? rawTerms.map(String).filter(Boolean).slice(0, 12) : [];
   if (!original && !semantic && !terms.length) return "";
   const mode = String(plan.mode || "");
+  const modeLabel = mode === "fallback" ? '<span class="search-mode">fallback</span>' : "";
   if (mode === "fallback") {
     const normalizedOriginal = original.trim().toLocaleLowerCase().replace(/\s+/g, " ");
     const normalizedSemantic = semantic.trim().toLocaleLowerCase().replace(/\s+/g, " ");
@@ -412,11 +412,13 @@ function renderSearchDetails(plan, { open = false } = {}) {
       : "";
     return `
       <details class="search-details"${open ? " open" : ""}>
-        <summary>Search details</summary>
+        <summary>Search details ${modeLabel}</summary>
         <dl>
+          <dt>Original question</dt>
+          <dd>${escapeHtml(original)}</dd>
           ${contextualQuery}
           <dt>Search expansion</dt>
-          <dd class="search-empty">Searched using your question without additional terms.</dd>
+          <dd class="search-empty">No additional expansion was generated.</dd>
         </dl>
       </details>
     `;
@@ -426,11 +428,13 @@ function renderSearchDetails(plan, { open = false } = {}) {
     : '<span class="search-empty">None</span>';
   return `
     <details class="search-details"${open ? " open" : ""}>
-      <summary>Search details</summary>
+      <summary>Search details ${modeLabel}</summary>
       <dl>
-        <dt>Related wording</dt>
+        <dt>Original question</dt>
+        <dd>${escapeHtml(original)}</dd>
+        <dt>Semantic expansion</dt>
         <dd>${escapeHtml(semantic)}</dd>
-        <dt>Additional keywords</dt>
+        <dt>BM25 expansion</dt>
         <dd class="search-terms">${termMarkup}</dd>
       </dl>
     </details>
@@ -440,9 +444,15 @@ function renderSearchDetails(plan, { open = false } = {}) {
 function queryStageLabel(status) {
   const detail = status?.progressDetail || status?.progress_detail;
   const stage = String(detail?.stage || "");
-  if (stage === "planning") return "Preparing search…";
-  if (stage === "searching") return "Searching notes…";
-  if (stage === "answering") return "Writing answer…";
+  if (stage === "planning") return "Planning search…";
+  if (stage === "searching") return "Searching indexed notes…";
+  if (stage === "answering") {
+    const rawCount = detail?.retrievedCount ?? detail?.retrieved_count;
+    const count = Number(rawCount);
+    return Number.isFinite(count)
+      ? `Answering from ${count} selected context chunk${count === 1 ? "" : "s"}…`
+      : "Answering from retrieved notes…";
+  }
   const stateName = String(status?.state || status?.job?.state || "").toLowerCase();
   return stateName === "queued" ? "Queued…" : "Preparing search…";
 }
@@ -479,16 +489,14 @@ function replaceQueryResult(node, result) {
   const plan = result?.retrievalPlan || result?.retrieval_plan;
   const record = messageData.get(node);
   if (!record) return;
-  const stickToBottom = el.messages.scrollHeight - el.messages.scrollTop - el.messages.clientHeight < 80;
   const disclosure = body.querySelector(".search-details");
   record.result = result;
   record.hits = result.hits || result.sources || result.citations || [];
-  const pageCount = groupSources(record.hits).length;
-  body.innerHTML = `${renderText(answer, `${record.id}-source`)}<div class="answer-actions"><button type="button" class="answer-sources" aria-pressed="false">Sources · ${pageCount} page${pageCount === 1 ? "" : "s"}</button></div>`;
+  body.innerHTML = renderText(answer);
   if (disclosure && record.planKey === JSON.stringify(plan || null)) body.append(disclosure);
   else body.insertAdjacentHTML("beforeend", renderSearchDetails(plan, { open: disclosure?.open === true }));
   selectAnswer(node);
-  if (stickToBottom) el.messages.scrollTop = el.messages.scrollHeight;
+  el.messages.scrollTop = el.messages.scrollHeight;
 }
 
 async function ask() {
@@ -500,9 +508,8 @@ async function ask() {
   }
   addMessage("user", question);
   el.question.value = "";
-  const pending = addMessage("assistant", "Preparing search…");
-  messageData.set(pending, { id: `answer-${++state.answerCounter}`, question });
-  el.messages.scrollTop = el.messages.scrollHeight;
+  const pending = addMessage("assistant", "thinking...");
+  messageData.set(pending, {});
   const selection = { corpus: state.corpus, model: state.model };
   const payload = {
     operation: "ask",
@@ -620,58 +627,38 @@ async function controlRuntime(action) {
   }
 }
 
-function groupSources(hits) {
-  const groups = new Map();
-  hits.forEach((hit, index) => {
-    const notebookId = String(hit.notebookId || hit.notebook_id || "");
-    const pageId = String(hit.pageId || hit.page_id || hit.sourceUrl || hit.source_url || hit.file || `hit-${index}`);
-    const key = JSON.stringify([notebookId, pageId]);
-    if (!groups.has(key)) groups.set(key, { notebookId, hits: [] });
-    groups.get(key).hits.push({ hit, sourceIndex: Number(hit.sourceIdx || hit.source_idx || index + 1) });
-  });
-  return [...groups.values()];
-}
-
 function selectAnswer(node) {
   const record = messageData.get(node);
   if (!record?.result) return;
-  state.selectedAnswer?.querySelector(".answer-sources")?.setAttribute("aria-pressed", "false");
   state.selectedAnswer = node;
-  node.querySelector(".answer-sources")?.setAttribute("aria-pressed", "true");
-  el.sourceQuestion.textContent = record.question;
-  renderSources(record.hits, record.id);
+  renderSources(record.hits);
   renderContextMeter(record.result);
 }
 
-function renderSources(hits, answerId = "") {
+function renderSources(hits) {
   if (!hits.length) {
-    el.sources.innerHTML = `<div class="empty">${answerId ? "No matching sources." : "No retrieval yet."}</div>`;
+    el.sources.innerHTML = '<div class="empty">No retrieval yet.</div>';
     return;
   }
-  el.sources.innerHTML = groupSources(hits).map((group) => {
-    const hit = group.hits[0].hit;
+  el.sources.innerHTML = hits.map((hit, index) => {
     const sourceHref = safeSourceHref(hit.sourceUrl || hit.source_url || hit.novoUrl || hit.novo_url);
-    const notebook = state.corpora.find((item) => item.id === group.notebookId || item.corpus_key === `novo:${group.notebookId}`)?.name || hit.notebookName || hit.notebook || "";
-    const preview = String(hit.text || hit.excerpt || "").replace(/\s+/g, " ").trim();
+    const sourceIndex = Number(hit.sourceIdx || hit.source_idx || index + 1);
+    const notebookId = hit.notebookId || hit.notebook_id || "";
+    const notebook = state.corpora.find((item) => item.id === notebookId)?.name || hit.notebook || hit.notebookName || notebookId;
+    const used = hit.usedInContext ?? hit.used_in_context;
     return `
-      <details class="source-page">
+      <details class="source ${used === false ? "source-ranked-only" : ""}" id="source-${sourceIndex}">
         <summary>
-          <span class="source-page-title">${escapeHtml(hit.title || "Untitled page")}</span>
-          <span class="source-meta">${escapeHtml(notebook)}${notebook ? " · " : ""}${group.hits.length} passage${group.hits.length === 1 ? "" : "s"}</span>
-          <span class="source-preview">${escapeHtml(preview.slice(0, 150))}${preview.length > 150 ? "…" : ""}</span>
+          <span class="mono">#${sourceIndex}</span>
+          <span class="mono">${Number(hit.score || 0).toFixed(3)}</span>
+          <code>${escapeHtml(hit.file || hit.title || "Novo source")}</code>
         </summary>
-        <div class="source-page-body">
-          ${sourceHref ? `<a class="source-page-link" href="${escapeAttribute(sourceHref)}" target="_blank" rel="noreferrer">Open Novo page</a>` : ""}
-          ${group.hits.map(({ hit: passage, sourceIndex }) => {
-            const used = passage.usedInContext ?? passage.used_in_context;
-            return `<details class="source ${used === false ? "source-ranked-only" : ""}" id="${answerId}-source-${sourceIndex}">
-              <summary><span class="mono">[${sourceIndex}]</span><span>${used === false ? "Additional match" : "Context passage"}</span></summary>
-              <div class="source-body">
-                <div class="source-text">${escapeHtml(passage.text || passage.excerpt || "")}</div>
-                <details class="source-scores"><summary>Search scores</summary><div class="mono source-meta">rank=${Number(passage.score || 0).toFixed(3)} · ${escapeHtml(sourceMetrics(passage))}</div></details>
-              </div>
-            </details>`;
-          }).join("")}
+        <div class="source-body">
+          <div class="source-title">${escapeHtml(hit.title || "")}</div>
+          <div class="source-meta">${escapeHtml(notebook)}</div>
+          <div class="mono source-meta">${escapeHtml(sourceMetrics(hit))}</div>
+          ${sourceHref ? `<div><a href="${escapeAttribute(sourceHref)}" target="_blank" rel="noreferrer">Open Novo page</a></div>` : ""}
+          <div class="source-text">${escapeHtml(hit.text || hit.excerpt || "")}</div>
         </div>
       </details>
     `;
@@ -683,11 +670,7 @@ function openCitationSource(event) {
   if (!(target instanceof Element)) return;
   const node = target.closest(".message");
   if (!node || !el.messages.contains(node)) return;
-  if (target.closest(".answer-sources")) {
-    selectAnswer(node);
-    return;
-  }
-  const link = target.closest("a.citation-link");
+  const link = target.closest('a[href^="#source-"]');
   if (!link || !messageData.get(node)?.result) return;
   event.preventDefault();
   if (state.selectedAnswer !== node) selectAnswer(node);
@@ -696,7 +679,6 @@ function openCitationSource(event) {
   const source = document.getElementById(sourceId);
   if (!(source instanceof HTMLDetailsElement) || !el.sources.contains(source)) return;
 
-  source.closest(".source-page").open = true;
   source.open = true;
   source.scrollIntoView({ behavior: "smooth", block: "nearest" });
   source.querySelector("summary")?.focus({ preventScroll: true });
@@ -762,7 +744,6 @@ function clearConversation() {
   state.selectedAnswer = null;
   messageData = new WeakMap();
   el.messages.innerHTML = "";
-  el.sourceQuestion.textContent = "";
   renderSources([]);
   renderContextMeter(null);
 }
@@ -836,11 +817,11 @@ function rememberQuestion(question) {
 function selectionMatches(selection) {
   return state.corpus === selection.corpus && state.model === selection.model;
 }
-function renderText(value, citationPrefix = "source") {
+function renderText(value) {
   return normalizeCitationBrackets(escapeHtml(value))
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\[((?:\d+\s*,\s*)*\d+)\]/g, (_match, numbers) => numbers.split(",").map((n) => `<a class="citation-link" href="#${citationPrefix}-${n.trim()}">${n.trim()}</a>`).join(" "));
+    .replace(/\[((?:\d+\s*,\s*)*\d+)\]/g, (_match, numbers) => numbers.split(",").map((n) => `<a class="citation-link" href="#source-${n.trim()}">${n.trim()}</a>`).join(" "));
 }
 function normalizeCitationBrackets(value) {
   return value

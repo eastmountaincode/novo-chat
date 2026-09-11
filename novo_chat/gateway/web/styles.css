@@ -337,9 +337,7 @@ a {
   text-align: right;
 }
 
-.settings-details > summary:focus-visible,
-.source-page > summary:focus-visible,
-.source-scores > summary:focus-visible {
+.settings-details > summary:focus-visible {
   outline: 2px solid #000;
   outline-offset: -2px;
 }
@@ -610,23 +608,7 @@ a {
 }
 
 .query-stage {
-  font-weight: 400;
-  color: #555;
-}
-
-.answer-actions {
-  margin-top: 12px;
-  white-space: normal;
-}
-
-.answer-sources {
-  padding: 4px 8px;
-  font-size: 12px;
-}
-
-.answer-sources[aria-pressed="true"] {
-  background: #f0f0f0;
-  box-shadow: inset 3px 0 #000;
+  font-weight: 600;
 }
 
 .search-details {
@@ -753,42 +735,6 @@ a {
   padding: 12px;
 }
 
-.source-question {
-  margin-top: 8px;
-  font-size: 12px;
-  line-height: 1.4;
-  overflow-wrap: anywhere;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.source-question:empty { display: none; }
-
-.source-page {
-  border: 1px solid #000;
-  margin-bottom: 10px;
-}
-
-.source-page > summary {
-  padding: 10px;
-  cursor: pointer;
-  font-size: 13px;
-  line-height: 1.4;
-  overflow-wrap: anywhere;
-}
-
-.source-page-title { font-weight: 600; }
-.source-page > summary .source-meta { display: block; margin-top: 4px; }
-.source-preview { display: block; margin-top: 6px; font-size: 12px; color: #555; }
-.source-page-body { border-top: 1px solid #000; padding: 8px; }
-.source-page-link { display: inline-block; margin-bottom: 8px; font-size: 12px; }
-.source-page .source:last-child { margin-bottom: 0; }
-.source-scores { margin-top: 10px; }
-.source-scores > summary { cursor: pointer; color: #555; font-size: 11px; }
-.source-scores .source-meta { margin-top: 4px; overflow-wrap: anywhere; }
-
 .source {
   border: 1px solid #000;
   margin-bottom: 8px;
@@ -799,7 +745,7 @@ a {
   color: #555;
 }
 
-.source > summary {
+.source summary {
   display: grid;
   grid-template-columns: 36px minmax(0, 1fr);
   gap: 8px;
@@ -807,6 +753,10 @@ a {
   padding: 8px;
   cursor: pointer;
   font-size: 12px;
+}
+
+.source summary:has(code) {
+  grid-template-columns: 36px 54px minmax(0, 1fr);
 }
 
 .source summary:focus {
