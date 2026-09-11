@@ -701,6 +701,8 @@ def test_gateway_ui_preserves_aorus_layout_and_ranked_retrieval_contract() -> No
     assert 'class="progress-bar" role="progressbar"' in javascript
     assert 'data-progress-fill="${percent.toFixed(0)}"' in javascript
     assert 'fill.style.width = `${fill.dataset.progressFill}%`' in javascript
+    assert 'if (percent >= 100) return "Finalizing model"' in javascript
+    assert 'if (percent > 0) return "Loading model weights"' in javascript
     assert 'specRow("Notebook updated", formatBuiltAt(corpus.updated_at))' in javascript
     assert 'querySelector(".meter > div").style.width' in javascript
     assert 'el.messages.addEventListener("click", openCitationSource)' in javascript

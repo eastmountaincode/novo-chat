@@ -27,6 +27,10 @@ CONTAINER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 ACTOR_ID_RE = re.compile(r"^[A-Za-z0-9_.:@-]{1,128}$")
 MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+STARTED_AT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$")
+CHECKPOINT_PROGRESS_RE = re.compile(
+    r"Loading safetensors checkpoint shards:\s*(\d{1,3})%\s+Completed\s*\|"
+)
 ALLOWED_FIELDS = {"version", "requestId", "actorId", "action", "model"}
 
 
@@ -153,6 +157,33 @@ class DockerController:
             raise ControllerError("CONTAINER_UNAVAILABLE", "Configured model container is unavailable.", 503)
         return result.stdout.strip().lower() == "true"
 
+    def _startup_progress(self, container: str) -> Optional[float]:
+        """Return only the latest current-run checkpoint percentage."""
+
+        try:
+            started = self._run(
+                ["inspect", "--format", "{{.State.StartedAt}}", container],
+                timeout=15,
+            )
+            started_at = started.stdout.strip()
+            if started.returncode != 0 or not STARTED_AT_RE.fullmatch(started_at):
+                return None
+            logs = self._run(
+                ["logs", "--since", started_at, "--tail", "256", container],
+                timeout=15,
+            )
+        except ControllerError:
+            return None
+        if logs.returncode != 0:
+            return None
+        matches = list(CHECKPOINT_PROGRESS_RE.finditer(logs.stdout + "\n" + logs.stderr))
+        if not matches:
+            return None
+        percent = int(matches[-1].group(1))
+        if percent < 0 or percent > 100:
+            return None
+        return percent / 100.0
+
     def _exclusive_containers(self) -> Tuple[str, ...]:
         try:
             containers = load_inventory(self.config["inventoryPath"])
@@ -176,7 +207,13 @@ class DockerController:
         # The privileged boundary reports only container runtime state.  The
         # unprivileged worker separately probes the model HTTP endpoint before
         # exposing the public semantic state as ``ready``.
-        return {"state": "running" if self._is_running(config["container"]) else "stopped"}
+        if not self._is_running(config["container"]):
+            return {"state": "stopped"}
+        status = {"state": "running"}
+        progress = self._startup_progress(config["container"])
+        if progress is not None:
+            status["progress"] = progress
+        return status
 
     def start(self, model: str) -> Dict[str, Any]:
         config = self._model(model)

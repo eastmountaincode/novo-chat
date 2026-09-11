@@ -84,6 +84,38 @@ class FakeController:
         return {"state": "stopped", "changed": True}
 
 
+class ProgressDockerController(modelctl.DockerController):
+    def __init__(self, log_text: str):
+        super().__init__(
+            {
+                "dockerBinary": "/usr/bin/docker",
+                "inventoryPath": "/unused",
+                "models": {
+                    "small": {"container": "small-model", "stopTimeoutSeconds": 30}
+                },
+            }
+        )
+        self.log_text = log_text
+        self.commands = []
+
+    def _is_running(self, container: str) -> bool:
+        return container == "small-model"
+
+    def _run(self, args, timeout: int = 60) -> subprocess.CompletedProcess:
+        del timeout
+        self.commands.append(list(args))
+        if args[:2] == ["inspect", "--format"]:
+            return subprocess.CompletedProcess(
+                args,
+                0,
+                stdout="2026-09-11T18:40:25.123456789Z\n",
+                stderr="",
+            )
+        if args[0] == "logs":
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr=self.log_text)
+        raise AssertionError("unexpected fake Docker operation: %r" % (args,))
+
+
 def request(**overrides):
     payload = {
         "version": 1,
@@ -131,6 +163,38 @@ class ModelControllerProtocolTests(unittest.TestCase):
         payload, status = modelctl.handle_request(FakeController(), request(action="start"))
         self.assertEqual(status, 200)
         self.assertEqual(payload["status"]["state"], "running")
+
+    def test_status_reports_latest_current_run_checkpoint_percentage(self):
+        controller = ProgressDockerController(
+            "Loading safetensors checkpoint shards:  46% Completed | 18/39\r"
+            "Loading safetensors checkpoint shards:  49% Completed | 19/39\r"
+        )
+
+        status = controller.status("small")
+
+        self.assertEqual(status, {"state": "running", "progress": 0.49})
+        self.assertEqual(
+            controller.commands[-1],
+            [
+                "logs",
+                "--since",
+                "2026-09-11T18:40:25.123456789Z",
+                "--tail",
+                "256",
+                "small-model",
+            ],
+        )
+
+    def test_status_omits_unrecognized_or_out_of_range_progress(self):
+        for log_text in (
+            "ordinary vLLM startup output",
+            "Loading safetensors checkpoint shards: 101% Completed | 40/39",
+        ):
+            with self.subTest(log_text=log_text):
+                self.assertEqual(
+                    ProgressDockerController(log_text).status("small"),
+                    {"state": "running"},
+                )
 
     def test_unknown_action_is_rejected(self):
         payload, status = modelctl.handle_request(FakeController(), request(action="exec"))

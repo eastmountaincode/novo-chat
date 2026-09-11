@@ -322,9 +322,39 @@ class WorkerExecutor:
                     "MODEL_TRANSITION_FAILED",
                     "Model did not enter a running state.",
                 )
+
+            last_progress = 0.0
+
+            def report_start_progress() -> None:
+                nonlocal last_progress
+                try:
+                    status = self.model_controller.status(
+                        model,
+                        request_id=operation.request_id,
+                        actor_user_id=operation.actor_user_id,
+                    )
+                except ModelControllerError:
+                    return
+                raw_progress = status.get("progress")
+                if (
+                    isinstance(raw_progress, bool)
+                    or not isinstance(raw_progress, (int, float))
+                ):
+                    return
+                progress = float(raw_progress)
+                if not 0.0 <= progress <= 1.0 or progress < last_progress:
+                    return
+                last_progress = progress
+                self.job_store.set_progress(
+                    operation.operation_id,
+                    progress,
+                    now=self.clock(),
+                )
+
             if not self.model_readiness_probe.wait_until_ready(
                 model,
                 timeout_seconds=self.model_start_timeout_seconds,
+                progress_callback=report_start_progress,
             ):
                 raise ModelControllerError(
                     "MODEL_READINESS_TIMEOUT",

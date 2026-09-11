@@ -158,6 +158,11 @@ On the compute host:
 
 The controller is the only process that talks to Docker. `PrivateNetwork=true`
 and `RestrictAddressFamilies=AF_UNIX` prevent it from opening a network path.
+During model startup, controller status may include only the latest validated
+checkpoint percentage from the current container run. Raw Docker and vLLM logs
+remain inside the privileged boundary. The worker persists that percentage
+during its readiness wait so the gateway's existing one-second job polling can
+render live progress without a separate streaming channel.
 Every controller instance uses `/run/novo-chat/modelctl-gpu.lock` plus the one
 shared inventory while performing start and stop transitions. A start reloads
 that inventory only after taking the lock. This makes the GPU exclusion

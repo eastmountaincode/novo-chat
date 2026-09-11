@@ -66,15 +66,20 @@ class FixtureNovo:
 class FixtureWorker:
     def __init__(self) -> None:
         self.jobs: dict[str, dict] = {}
+        self.model_ready = False
 
     async def health(self):
         return {"state": "ready", "queueHealthy": True, "indexServiceHealthy": True}
 
     async def capabilities(self):
-        return {"models": ["demo:model"], "operations": ["query", "index_rebuild"]}
+        return {
+            "models": ["demo:model"],
+            "operations": ["query", "index_rebuild", "model_start", "model_stop"],
+        }
 
     async def model_status(self):
-        return {"models": {"demo:model": {"state": "ready", "healthy": True}}}
+        state = "ready" if self.model_ready else "stopped"
+        return {"models": {"demo:model": {"state": state, "healthy": self.model_ready}}}
 
     async def index_status(self, *, request_id, actor_user_id, scope):
         del request_id, actor_user_id
@@ -117,13 +122,16 @@ class FixtureWorker:
             }
         elif operation == "index_rebuild":
             result = {"kind": "index", "indexes": scope, "chunkCount": 128}
-        else:
+        elif operation == "model_start":
             result = {"kind": "model", "model": payload["model"], "state": "ready"}
+        else:
+            self.model_ready = False
+            result = {"kind": "model", "model": payload["model"], "state": "stopped"}
         job = {
             "jobId": job_id,
             "operation": operation,
-            "state": "queued" if operation == "query" else "succeeded",
-            "progress": 0.0 if operation == "query" else 1.0,
+            "state": "queued" if operation in {"query", "model_start"} else "succeeded",
+            "progress": 0.0 if operation in {"query", "model_start"} else 1.0,
             "result": result,
             "_polls": 0,
         }
@@ -165,6 +173,17 @@ class FixtureWorker:
                     }
                 )
             else:
+                job.update({"state": "succeeded", "progress": 1.0})
+        elif job["operation"] == "model_start":
+            job["_polls"] += 1
+            if job["_polls"] == 1:
+                job.update({"state": "running", "progress": 0.03})
+            elif job["_polls"] == 2:
+                job.update({"progress": 0.49})
+            elif job["_polls"] == 3:
+                job.update({"progress": 1.0})
+            else:
+                self.model_ready = True
                 job.update({"state": "succeeded", "progress": 1.0})
         return {"job": {key: value for key, value in job.items() if not key.startswith("_")}}
 
